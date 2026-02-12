@@ -347,6 +347,135 @@ function getRSIInterpretation(rsi) {
 }
 
 /**
+ * Detect Death Cross / Golden Cross
+ * Death Cross: SMA20 crosses below SMA50 (bearish)
+ * Golden Cross: SMA20 crosses above SMA50 (bullish)
+ * @param {number} sma20 - 20-day Simple Moving Average
+ * @param {number} sma50 - 50-day Simple Moving Average
+ * @returns {object} - Cross status and trend strength
+ */
+function detectCrossover(sma20, sma50) {
+  if (sma20 === null || sma50 === null) {
+    return { deathCross: false, goldenCross: false, crossStatus: 'unknown', trendStrength: 0 };
+  }
+
+  const deathCross = sma20 < sma50;
+  const goldenCross = sma20 > sma50;
+
+  // Calculate trend strength as percentage difference
+  const trendStrength = ((sma20 - sma50) / sma50) * 100;
+
+  let crossStatus = 'neutral';
+  if (goldenCross && trendStrength > 2) crossStatus = 'strong_bullish';
+  else if (goldenCross) crossStatus = 'bullish';
+  else if (deathCross && trendStrength < -2) crossStatus = 'strong_bearish';
+  else if (deathCross) crossStatus = 'bearish';
+
+  return {
+    deathCross,
+    goldenCross,
+    crossStatus,
+    trendStrength: parseFloat(trendStrength.toFixed(2))
+  };
+}
+
+/**
+ * Count consecutive down days (falling knife detection)
+ * @param {number[]} closes - Array of closing prices
+ * @returns {object} - Consecutive down days count and pattern info
+ */
+function detectFallingKnife(closes) {
+  if (!closes || closes.length < 2) {
+    return { consecutiveDownDays: 0, isFallingKnife: false, recentTrend: 'unknown' };
+  }
+
+  let downDays = 0;
+  let upDays = 0;
+
+  // Count consecutive down days from most recent
+  for (let i = closes.length - 1; i > 0; i--) {
+    if (closes[i] < closes[i - 1]) {
+      downDays++;
+    } else {
+      break;
+    }
+  }
+
+  // Count consecutive up days from most recent (if not down)
+  if (downDays === 0) {
+    for (let i = closes.length - 1; i > 0; i--) {
+      if (closes[i] > closes[i - 1]) {
+        upDays++;
+      } else {
+        break;
+      }
+    }
+  }
+
+  // Calculate 5-day momentum
+  const fiveDayReturn = closes.length >= 5
+    ? ((closes[closes.length - 1] - closes[closes.length - 5]) / closes[closes.length - 5]) * 100
+    : 0;
+
+  const isFallingKnife = downDays >= 3 || fiveDayReturn < -8;
+
+  let recentTrend = 'neutral';
+  if (upDays >= 3) recentTrend = 'strong_up';
+  else if (upDays >= 1) recentTrend = 'up';
+  else if (downDays >= 3) recentTrend = 'strong_down';
+  else if (downDays >= 1) recentTrend = 'down';
+
+  return {
+    consecutiveDownDays: downDays,
+    consecutiveUpDays: upDays,
+    fiveDayReturn: parseFloat(fiveDayReturn.toFixed(2)),
+    isFallingKnife,
+    recentTrend
+  };
+}
+
+/**
+ * Check for extreme volatility conditions
+ * @param {object} atrData - ATR calculation results
+ * @param {number} price - Current price
+ * @returns {object} - Volatility assessment
+ */
+function assessVolatility(atrData, price) {
+  if (!atrData || !price) {
+    return { isHighVolatility: false, volatilityLevel: 'unknown', riskMultiplier: 1 };
+  }
+
+  const dailyVolPercent = atrData.avgDailyRangePercent;
+
+  let volatilityLevel = 'normal';
+  let riskMultiplier = 1;
+  let isHighVolatility = false;
+
+  if (dailyVolPercent > 5) {
+    volatilityLevel = 'extreme';
+    riskMultiplier = 0.5; // Reduce position size
+    isHighVolatility = true;
+  } else if (dailyVolPercent > 3) {
+    volatilityLevel = 'high';
+    riskMultiplier = 0.75;
+    isHighVolatility = true;
+  } else if (dailyVolPercent > 2) {
+    volatilityLevel = 'elevated';
+    riskMultiplier = 0.9;
+  } else if (dailyVolPercent < 1) {
+    volatilityLevel = 'low';
+    riskMultiplier = 1.1; // Can take slightly larger position
+  }
+
+  return {
+    isHighVolatility,
+    volatilityLevel,
+    dailyVolPercent,
+    riskMultiplier
+  };
+}
+
+/**
  * Calculate Average True Range (ATR) approximation
  * Uses average daily range as percentage over the specified period
  * @param {number[]} highs - Array of high prices
@@ -742,14 +871,22 @@ function generateBattlePlan(analysis) {
   const passesAllFilters = analysis.passesAllFilters;
   const filterResults = analysis.filterResults;
   const hasRealData = analysis.hasRealData;
+  const isStaleData = analysis.isStaleData;
   const atrData = analysis.atrData;
+
+  // NEW: Extract enhanced safety indicators
+  const crossoverData = analysis.crossoverData || { deathCross: false, goldenCross: false };
+  const fallingKnifeData = analysis.fallingKnifeData || { isFallingKnife: false, consecutiveDownDays: 0 };
+  const volatilityData = analysis.volatilityData || { isHighVolatility: false, volatilityLevel: 'normal' };
 
   // Calculate entry zone (±1% from current price)
   const entryLow = parseFloat((price * 0.99).toFixed(2));
   const entryHigh = parseFloat((price * 1.01).toFixed(2));
 
   // Calculate DYNAMIC stop loss and take profit based on ATR volatility
-  const strategy = calculateDynamicStrategy(price, atrData, 1.5, 2);
+  // Widen stops for high volatility stocks
+  const riskMultiplier = volatilityData.isHighVolatility ? 2.0 : 1.5;
+  const strategy = calculateDynamicStrategy(price, atrData, riskMultiplier, 2);
 
   // Use dynamic values
   const stopLoss = strategy.stopLoss;
@@ -763,99 +900,206 @@ function generateBattlePlan(analysis) {
   let confidence = 'Low';
   let confidenceScore = 0;
   let reasoning = '';
+  const warnings = [];
 
+  // =====================
+  // CONFIDENCE SCORING (Enhanced)
+  // =====================
+
+  // Base score from filter criteria
+  if (filterResults.trendFilter) confidenceScore += 20;
+  if (filterResults.momentumFilter) confidenceScore += 25;
+  if (filterResults.volumeFilter) confidenceScore += 15;
+  if (filterResults.priceFilter) confidenceScore += 5;
+  if (filterResults.safetyFilter) confidenceScore += 15;
+
+  // PENALTIES for risky conditions
   if (!hasRealData) {
     confidenceScore -= 30;
+    warnings.push('No real-time data available');
+  }
+  if (isStaleData) {
+    confidenceScore -= 25;
+    warnings.push('Data may be stale');
+  }
+  if (crossoverData.deathCross) {
+    confidenceScore -= 40; // Heavy penalty for death cross
+    warnings.push('DEATH CROSS: SMA20 below SMA50');
+  }
+  if (fallingKnifeData.isFallingKnife) {
+    confidenceScore -= 35;
+    warnings.push(`FALLING KNIFE: ${fallingKnifeData.consecutiveDownDays} consecutive down days`);
+  }
+  if (fallingKnifeData.consecutiveDownDays >= 2 && fallingKnifeData.consecutiveDownDays < 3) {
+    confidenceScore -= 15;
+    warnings.push('2 consecutive down days');
+  }
+  if (volatilityData.isHighVolatility) {
+    confidenceScore -= 15;
+    warnings.push(`HIGH VOLATILITY: ${volatilityData.volatilityLevel} (${volatilityData.dailyVolPercent?.toFixed(1)}% daily range)`);
+  }
+  if (rsi !== null && rsi > 65) {
+    confidenceScore -= 10; // Approaching overbought
+  }
+  if (rsi !== null && rsi < 40) {
+    confidenceScore -= 10; // Weak momentum
   }
 
-  // Score based on filter criteria
-  if (filterResults.trendFilter) confidenceScore += 25;
-  if (filterResults.momentumFilter) confidenceScore += 30;
-  if (filterResults.volumeFilter) confidenceScore += 20;
-  if (filterResults.priceFilter) confidenceScore += 5;
-
-  // Bonus points
+  // BONUSES for strong conditions
+  if (crossoverData.goldenCross && crossoverData.trendStrength > 2) {
+    confidenceScore += 15; // Strong golden cross
+  }
   if (rsi !== null && rsi >= 55 && rsi <= 65) {
-    confidenceScore += 10;
+    confidenceScore += 10; // Sweet spot RSI
   }
-  if (volumeRatio >= 1.2) {
-    confidenceScore += 5;
+  if (volumeRatio >= 1.3) {
+    confidenceScore += 10; // Strong volume confirmation
+  }
+  if (fallingKnifeData.consecutiveUpDays >= 2) {
+    confidenceScore += 5; // Positive momentum
   }
 
-  // Determine verdict
-  if (!hasRealData) {
+  // =====================
+  // VERDICT DETERMINATION (Enhanced)
+  // =====================
+
+  // Priority 1: Data quality issues
+  if (!hasRealData || isStaleData) {
     verdict = 'WATCH';
-    reasoning = `Waiting for market data. Analysis will be available when market is open.`;
-  } else if (passesAllFilters) {
+    reasoning = isStaleData
+      ? 'Data may be stale. Wait for fresh market data before making decisions.'
+      : 'Waiting for market data. Analysis will be available when market is open.';
+  }
+  // Priority 2: Dangerous patterns (AVOID)
+  else if (crossoverData.deathCross) {
+    verdict = 'AVOID';
+    reasoning = `DEATH CROSS detected: SMA20 ($${analysis.sma20?.toFixed(2)}) is below SMA50 ($${analysis.sma50?.toFixed(2)}). This bearish signal suggests waiting for trend reversal.`;
+  }
+  else if (fallingKnifeData.isFallingKnife) {
+    verdict = 'AVOID';
+    reasoning = `FALLING KNIFE: ${fallingKnifeData.consecutiveDownDays} consecutive down days with ${fallingKnifeData.fiveDayReturn?.toFixed(1)}% 5-day return. Do not catch falling knives.`;
+  }
+  else if (!filterResults.trendFilter) {
+    verdict = 'AVOID';
+    reasoning = `Below SMA50 indicates downtrend. Wait for price to reclaim the 50-day average.`;
+  }
+  else if (!filterResults.priceFilter) {
+    verdict = 'AVOID';
+    reasoning = `Price below $10 - higher volatility and manipulation risk.`;
+  }
+  // Priority 3: Conditional signals
+  else if (passesAllFilters && confidenceScore >= 60) {
     verdict = 'BUY_NOW';
-    reasoning = `All quality filters pass: Price above SMA50 (uptrend), RSI at ${rsi} (momentum), volume ${(volumeRatio * 100).toFixed(0)}% of average.`;
-  } else if (filterResults.trendFilter && filterResults.priceFilter) {
+    reasoning = `Strong setup: ${crossoverData.goldenCross ? 'Golden Cross confirmed, ' : ''}Price above SMA50, RSI at ${rsi} (healthy momentum), volume ${(volumeRatio * 100).toFixed(0)}% of average.`;
+    if (volatilityData.isHighVolatility) {
+      reasoning += ` Note: High volatility - consider smaller position size.`;
+    }
+  }
+  else if (passesAllFilters && confidenceScore >= 45) {
+    verdict = 'BUY_NOW';
+    reasoning = `Filters pass but confidence is moderate. RSI at ${rsi}, volume ${(volumeRatio * 100).toFixed(0)}% of average. Consider waiting for stronger confirmation.`;
+  }
+  else if (filterResults.trendFilter && filterResults.priceFilter) {
     if (!filterResults.momentumFilter && rsi !== null) {
       if (rsi >= 70) {
         verdict = 'WAIT_FOR_DIP';
-        reasoning = `Uptrend confirmed but RSI ${rsi} indicates overbought. Wait for pullback.`;
+        reasoning = `Uptrend confirmed but RSI ${rsi} indicates overbought. Wait for pullback to RSI ~55-60.`;
       } else if (rsi < 50) {
         verdict = 'WATCH';
-        reasoning = `Above SMA50 but weak momentum (RSI ${rsi}). Wait for strength.`;
+        reasoning = `Above SMA50 but weak momentum (RSI ${rsi}). Wait for RSI to climb above 50.`;
+      } else {
+        verdict = 'WATCH';
+        reasoning = `Mixed signals. Monitor for clearer entry.`;
       }
     } else if (!filterResults.volumeFilter) {
       verdict = 'WAIT_FOR_DIP';
-      reasoning = `Good trend and momentum but volume only ${(volumeRatio * 100).toFixed(0)}% of average.`;
+      reasoning = `Good trend and momentum but volume only ${(volumeRatio * 100).toFixed(0)}% of average. Wait for volume confirmation.`;
+    } else if (!filterResults.safetyFilter) {
+      verdict = 'WATCH';
+      reasoning = `Technical setup is okay but safety concerns present. ${warnings.join('. ')}.`;
     } else {
       verdict = 'WATCH';
-      reasoning = `Some positive signals but not all criteria met.`;
+      reasoning = `Some positive signals but not all criteria met for high-confidence entry.`;
     }
-  } else if (!filterResults.trendFilter) {
-    verdict = 'AVOID';
-    reasoning = `Below SMA50 indicates downtrend. Wait for trend reversal.`;
-  } else if (!filterResults.priceFilter) {
-    verdict = 'AVOID';
-    reasoning = `Price below $10 - higher volatility risk.`;
-  } else {
+  }
+  else {
     verdict = 'WATCH';
-    reasoning = `Monitoring for better entry conditions.`;
+    reasoning = `Monitoring for better entry conditions. Current setup lacks sufficient confirmation.`;
   }
 
-  // Set confidence level
+  // Set confidence level (adjusted thresholds)
   if (confidenceScore >= 70) {
     confidence = 'High';
-  } else if (confidenceScore >= 45) {
+  } else if (confidenceScore >= 50) {
     confidence = 'Medium';
   } else {
     confidence = 'Low';
   }
 
-  // Generate why factors
+  // =====================
+  // GENERATE WHY FACTORS (Enhanced)
+  // =====================
   const whyFactors = [];
 
-  whyFactors.push(hasRealData ? '📊 LIVE DATA: Real-time Alpaca feed' : '⚠️ DATA: Waiting for market data');
+  // Data quality
+  if (isStaleData) {
+    whyFactors.push('⚠️ DATA: Potentially stale - verify before trading');
+  } else if (hasRealData) {
+    whyFactors.push('📊 LIVE DATA: Real-time Alpaca feed');
+  } else {
+    whyFactors.push('⚠️ DATA: Waiting for market data');
+  }
 
-  if (filterResults.trendFilter) {
+  // Trend & Cross
+  if (crossoverData.deathCross) {
+    whyFactors.push(`☠️ DEATH CROSS: SMA20 < SMA50 (Bearish)`);
+  } else if (crossoverData.goldenCross && crossoverData.trendStrength > 2) {
+    whyFactors.push(`✨ GOLDEN CROSS: SMA20 > SMA50 by ${crossoverData.trendStrength}%`);
+  } else if (filterResults.trendFilter) {
     whyFactors.push('📈 TREND: Price ABOVE 50-day average');
   } else {
     whyFactors.push('📉 TREND: Price BELOW 50-day average');
   }
 
+  // Momentum
   if (rsi !== null) {
     const rsiInterp = getRSIInterpretation(rsi);
     if (filterResults.momentumFilter) {
       whyFactors.push(`🎯 MOMENTUM: RSI ${rsi} - ${rsiInterp.status}`);
     } else if (rsi >= 70) {
       whyFactors.push(`⚠️ MOMENTUM: RSI ${rsi} - Overbought`);
+    } else if (rsi < 30) {
+      whyFactors.push(`⚠️ MOMENTUM: RSI ${rsi} - Oversold (risky)`);
     } else {
       whyFactors.push(`⏳ MOMENTUM: RSI ${rsi} - ${rsiInterp.status}`);
     }
   }
 
+  // Falling Knife Warning
+  if (fallingKnifeData.isFallingKnife) {
+    whyFactors.push(`🔪 FALLING KNIFE: ${fallingKnifeData.consecutiveDownDays} down days, ${fallingKnifeData.fiveDayReturn?.toFixed(1)}% weekly`);
+  } else if (fallingKnifeData.consecutiveDownDays >= 2) {
+    whyFactors.push(`⚠️ CAUTION: ${fallingKnifeData.consecutiveDownDays} consecutive down days`);
+  } else if (fallingKnifeData.consecutiveUpDays >= 3) {
+    whyFactors.push(`🚀 MOMENTUM: ${fallingKnifeData.consecutiveUpDays} consecutive up days`);
+  }
+
+  // Volatility
+  if (volatilityData.isHighVolatility) {
+    whyFactors.push(`🌊 VOLATILITY: ${volatilityData.volatilityLevel.toUpperCase()} (${volatilityData.dailyVolPercent?.toFixed(1)}% daily)`);
+  }
+
+  // Volume
   if (filterResults.volumeFilter) {
     whyFactors.push(`🔊 VOLUME: ${(volumeRatio * 100).toFixed(0)}% of average`);
   } else {
     whyFactors.push(`🔇 VOLUME: ${(volumeRatio * 100).toFixed(0)}% of average (low)`);
   }
 
-  // Position sizing
-  const maxPositionValue = 5000;
-  const suggestedShares = Math.floor(maxPositionValue / price);
+  // Position sizing (adjusted for volatility)
+  const basePositionValue = 5000;
+  const adjustedPositionValue = basePositionValue * (volatilityData.riskMultiplier || 1);
+  const suggestedShares = Math.floor(adjustedPositionValue / price);
   const suggestedInvestment = parseFloat((suggestedShares * price).toFixed(2));
 
   return {
@@ -863,8 +1107,22 @@ function generateBattlePlan(analysis) {
     confidence,
     confidenceScore,
     reasoning,
+    warnings, // NEW: Array of risk warnings
     whyFactors,
     filterResults,
+    // NEW: Safety data for transparency
+    safetyData: {
+      deathCross: crossoverData.deathCross,
+      goldenCross: crossoverData.goldenCross,
+      crossStatus: crossoverData.crossStatus,
+      trendStrength: crossoverData.trendStrength,
+      consecutiveDownDays: fallingKnifeData.consecutiveDownDays,
+      isFallingKnife: fallingKnifeData.isFallingKnife,
+      fiveDayReturn: fallingKnifeData.fiveDayReturn,
+      volatilityLevel: volatilityData.volatilityLevel,
+      isHighVolatility: volatilityData.isHighVolatility,
+      isStaleData
+    },
     entryZone: { low: entryLow, high: entryHigh, current: price },
     profitTarget: {
       price: profitTarget,
@@ -924,6 +1182,9 @@ export async function analyzeStock(symbol) {
     let avgVolume20 = null;
     let volumeRatio = 1;
     let atrData = null;
+    let crossoverData = { deathCross: false, goldenCross: false, crossStatus: 'unknown', trendStrength: 0 };
+    let fallingKnifeData = { consecutiveDownDays: 0, isFallingKnife: false, recentTrend: 'unknown' };
+    let volatilityData = { isHighVolatility: false, volatilityLevel: 'unknown', riskMultiplier: 1 };
 
     if (historical && historical.closes && historical.closes.length >= 50) {
       const closes = historical.closes;
@@ -939,7 +1200,16 @@ export async function analyzeStock(symbol) {
       // Calculate ATR for dynamic stop loss / take profit
       atrData = calculateATR(highs, lows, closes, 14);
 
-      console.log(`[${symbol}] Indicators: SMA50=${sma50?.toFixed(2)}, RSI=${rsi}, ATR=${atrData?.atr || 'N/A'}, AvgVol=${avgVolume20?.toFixed(0)}`);
+      // NEW: Detect Death Cross / Golden Cross
+      crossoverData = detectCrossover(sma20, sma50);
+
+      // NEW: Detect falling knife pattern
+      fallingKnifeData = detectFallingKnife(closes);
+
+      // NEW: Assess volatility risk
+      volatilityData = assessVolatility(atrData, quote.price);
+
+      console.log(`[${symbol}] Indicators: SMA50=${sma50?.toFixed(2)}, RSI=${rsi}, ATR=${atrData?.atr || 'N/A'}, Cross=${crossoverData.crossStatus}, DownDays=${fallingKnifeData.consecutiveDownDays}`);
     } else {
       console.log(`[${symbol}] Insufficient historical data`);
     }
@@ -951,13 +1221,18 @@ export async function analyzeStock(symbol) {
     // Determine trend
     const isUptrend = sma50 ? quote.price > sma50 : false;
 
-    // Filter criteria
-    const trendFilter = isUptrend;
+    // Check for stale data (quote older than 5 minutes)
+    const STALE_THRESHOLD = 300000; // 5 minutes
+    const isStaleData = quote.stale || (Date.now() - quote.timestamp > STALE_THRESHOLD);
+
+    // ENHANCED Filter criteria with safety checks
+    const trendFilter = isUptrend && !crossoverData.deathCross; // Must be uptrend AND not in death cross
     const momentumFilter = rsi !== null && rsi >= 50 && rsi <= 70;
     const volumeFilter = volumeRatio >= 1.10;
     const priceFilter = quote.price > 10;
+    const safetyFilter = !fallingKnifeData.isFallingKnife && !isStaleData; // NEW: No falling knives, no stale data
 
-    const passesAllFilters = hasRealData && trendFilter && momentumFilter && volumeFilter && priceFilter;
+    const passesAllFilters = hasRealData && trendFilter && momentumFilter && volumeFilter && priceFilter && safetyFilter;
 
     // Build analysis
     const analysis = {
@@ -971,14 +1246,19 @@ export async function analyzeStock(symbol) {
       isUptrend,
       passesAllFilters,
       hasRealData,
+      isStaleData,
       dataPoints: historical?.dataPoints || 0,
       atrData, // ATR data for dynamic stop loss / take profit
+      crossoverData, // Death Cross / Golden Cross detection
+      fallingKnifeData, // Consecutive down days detection
+      volatilityData, // Volatility risk assessment
       analystData, // Wall Street analyst ratings from Finnhub
       filterResults: {
         trendFilter,
         momentumFilter,
         volumeFilter,
-        priceFilter
+        priceFilter,
+        safetyFilter // NEW: No falling knife, no stale data
       }
     };
 
