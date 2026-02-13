@@ -271,9 +271,77 @@ const SECTOR_MAP = {
 const quoteCache = new Map();
 const historicalCache = new Map();
 const analystCache = new Map();
-const QUOTE_CACHE_TTL = 15000;       // 15 seconds for quotes (Alpaca is fast)
+const QUOTE_CACHE_TTL = 60000;       // 60 seconds for quotes (stabilization measure #4)
 const HISTORICAL_CACHE_TTL = 300000; // 5 minutes for historical data
 const ANALYST_CACHE_TTL = 3600000;   // 1 hour for analyst data (changes infrequently)
+
+// =====================
+// HYSTERESIS SYSTEM (Stabilization #1)
+// Requires stocks to appear as BUY_NOW in 2 consecutive scans
+// =====================
+const verdictHistoryCache = new Map(); // Tracks previous scan verdicts
+const VERDICT_HISTORY_TTL = 600000;    // 10 minutes - history expires if no scan in this time
+
+/**
+ * Check if a stock's BUY_NOW verdict should be confirmed or pending
+ * @param {string} symbol - Stock symbol
+ * @param {string} currentVerdict - The verdict from current analysis
+ * @returns {object} - { finalVerdict, isPendingConfirmation, previousVerdict }
+ */
+function applyHysteresis(symbol, currentVerdict) {
+  const upperSymbol = symbol.toUpperCase();
+  const now = Date.now();
+
+  // Get previous verdict history
+  const history = verdictHistoryCache.get(upperSymbol);
+  const previousVerdict = history && (now - history.timestamp < VERDICT_HISTORY_TTL)
+    ? history.verdict
+    : null;
+
+  let finalVerdict = currentVerdict;
+  let isPendingConfirmation = false;
+
+  // Hysteresis logic: BUY_NOW requires confirmation from previous scan
+  if (currentVerdict === 'BUY_NOW') {
+    if (previousVerdict === 'BUY_NOW') {
+      // Confirmed! Stock was BUY_NOW in previous scan too
+      finalVerdict = 'BUY_NOW';
+      console.log(`[${upperSymbol}] ✅ BUY_NOW CONFIRMED (2nd consecutive scan)`);
+    } else {
+      // First time BUY_NOW - downgrade to WATCH pending confirmation
+      finalVerdict = 'WATCH';
+      isPendingConfirmation = true;
+      console.log(`[${upperSymbol}] ⏳ BUY_NOW PENDING CONFIRMATION (was: ${previousVerdict || 'new'})`);
+    }
+  }
+
+  // Update history with current verdict (before hysteresis adjustment)
+  verdictHistoryCache.set(upperSymbol, {
+    verdict: currentVerdict,  // Store the ORIGINAL verdict, not the adjusted one
+    timestamp: now
+  });
+
+  return {
+    finalVerdict,
+    isPendingConfirmation,
+    previousVerdict
+  };
+}
+
+/**
+ * Clean up old verdict history entries
+ */
+function cleanupVerdictHistory() {
+  const now = Date.now();
+  for (const [symbol, history] of verdictHistoryCache.entries()) {
+    if (now - history.timestamp > VERDICT_HISTORY_TTL) {
+      verdictHistoryCache.delete(symbol);
+    }
+  }
+}
+
+// Clean up verdict history periodically (every 5 minutes)
+setInterval(cleanupVerdictHistory, 300000);
 
 // =====================
 // TECHNICAL INDICATORS
@@ -1462,9 +1530,9 @@ function generateBattlePlan(analysis) {
       reasoning += ` Note: High volatility - consider smaller position size.`;
     }
   }
-  else if (passesAllFilters && confidenceScore >= 45) {
+  else if (passesAllFilters && confidenceScore >= 50) { // Stabilization #3: Raised from 45 to 50
     verdict = 'BUY_NOW';
-    reasoning = `Filters pass but confidence is moderate. RSI at ${rsi}, volume ${(volumeRatio * 100).toFixed(0)}% of average. Consider waiting for stronger confirmation.`;
+    reasoning = `Filters pass with moderate confidence. RSI at ${rsi}, volume ${(volumeRatio * 100).toFixed(0)}% of average.`;
   }
   // Priority 3.5: FALSE POSITIVE WARNINGS (milder cases - Item 5)
   else if (bullTrapData.isBullTrap) {
@@ -1783,7 +1851,7 @@ export async function analyzeStock(symbol) {
 
     // ENHANCED Filter criteria with safety checks
     const trendFilter = isUptrend && !crossoverData.deathCross; // Must be uptrend AND not in death cross
-    const momentumFilter = rsi !== null && rsi >= 50 && rsi <= 70;
+    const momentumFilter = rsi !== null && rsi >= 48 && rsi <= 72; // Stabilization #2: Widened from 50-70 to reduce edge-case flipping
     const volumeFilter = volumeRatio >= 1.10;
     const priceFilter = quote.price > 10;
     const safetyFilter = !fallingKnifeData.isFallingKnife && !isStaleData; // No falling knives, no stale data
@@ -1835,9 +1903,37 @@ export async function analyzeStock(symbol) {
     // Generate battle plan
     const battlePlan = generateBattlePlan(analysis);
 
-    console.log(`[${symbol}] ✅ ${battlePlan.verdict} | RSI: ${rsi} | Real Data: ${hasRealData ? 'YES' : 'NO'}`);
+    // Apply hysteresis (Stabilization #1): Require 2 consecutive BUY_NOW scans
+    const hysteresisResult = applyHysteresis(symbol, battlePlan.verdict);
 
-    return { ...analysis, battlePlan };
+    // Update battle plan with hysteresis-adjusted verdict
+    const finalBattlePlan = {
+      ...battlePlan,
+      originalVerdict: battlePlan.verdict,  // Store original for transparency
+      verdict: hysteresisResult.finalVerdict,
+      isPendingConfirmation: hysteresisResult.isPendingConfirmation,
+      previousVerdict: hysteresisResult.previousVerdict
+    };
+
+    // Adjust reasoning if pending confirmation
+    if (hysteresisResult.isPendingConfirmation) {
+      finalBattlePlan.reasoning = `⏳ PENDING CONFIRMATION: ${battlePlan.reasoning} (Requires confirmation in next scan)`;
+      finalBattlePlan.warnings = [
+        ...(battlePlan.warnings || []),
+        `First-time BUY signal - awaiting confirmation in next scan`
+      ];
+    }
+
+    // Detailed logging
+    if (hysteresisResult.isPendingConfirmation) {
+      console.log(`[${symbol}] ⏳ PENDING: Original=${battlePlan.verdict} → Displayed=${hysteresisResult.finalVerdict} | RSI: ${rsi}`);
+    } else if (battlePlan.verdict === 'BUY_NOW' && hysteresisResult.finalVerdict === 'BUY_NOW') {
+      console.log(`[${symbol}] ✅✅ CONFIRMED BUY_NOW | RSI: ${rsi} | Real Data: ${hasRealData ? 'YES' : 'NO'}`);
+    } else {
+      console.log(`[${symbol}] ✅ ${finalBattlePlan.verdict} | RSI: ${rsi} | Real Data: ${hasRealData ? 'YES' : 'NO'}`);
+    }
+
+    return { ...analysis, battlePlan: finalBattlePlan };
 
   } catch (error) {
     console.error(`[${symbol}] Analysis error:`, error.message);

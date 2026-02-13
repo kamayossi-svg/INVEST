@@ -83,9 +83,11 @@ export type Confidence = 'High' | 'Medium' | 'Low';
 
 export interface FilterResults {
   trendFilter: boolean;      // Price > SMA 50
-  momentumFilter: boolean;   // RSI 50-70
+  momentumFilter: boolean;   // RSI 48-72 (stabilized)
   volumeFilter: boolean;     // Volume > 110% avg
   priceFilter: boolean;      // Price > $10
+  safetyFilter?: boolean;    // No falling knife, no stale data
+  falsePositiveFilter?: boolean; // No bull trap, divergence, extension, etc.
 }
 
 export interface RSIInterpretation {
@@ -122,19 +124,52 @@ export interface Strategy {
   atr?: number;
 }
 
+export interface SafetyData {
+  deathCross?: boolean;
+  goldenCross?: boolean;
+  crossStatus?: string;
+  trendStrength?: number;
+  consecutiveDownDays?: number;
+  isFallingKnife?: boolean;
+  fiveDayReturn?: number;
+  volatilityLevel?: string;
+  isHighVolatility?: boolean;
+  isStaleData?: boolean;
+  // False Positive Prevention
+  isBullTrap?: boolean;
+  bullTrapRiskLevel?: string;
+  hasBearishDivergence?: boolean;
+  divergenceStrength?: number;
+  isExtended?: boolean;
+  extensionType?: string;
+  extensionPercent?: number;
+  isOverboughtExtreme?: boolean;
+  overboughtSeverity?: string;
+  isWeakBreakout?: boolean;
+  breakoutQuality?: string;
+  analystDivergence?: boolean;
+  analystConsensus?: string;
+}
+
 export interface BattlePlan {
   verdict: Verdict;
   confidence: Confidence;
   confidenceScore: number;
   reasoning: string;
   whyFactors: string[];
+  warnings?: string[];
   filterResults: FilterResults;
+  safetyData?: SafetyData;
   entryZone: EntryZone;
   profitTarget: ProfitTarget;
   stopLoss: StopLossTarget;
   riskReward: RiskReward;
   suggestedPosition: SuggestedPosition;
   strategy?: Strategy;
+  // Hysteresis fields (Stabilization #1)
+  originalVerdict?: Verdict;
+  isPendingConfirmation?: boolean;
+  previousVerdict?: Verdict | null;
 }
 
 export interface StockAnalysis extends Quote {
