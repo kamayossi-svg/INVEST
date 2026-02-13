@@ -2039,30 +2039,49 @@ export async function analyzeStock(symbol) {
     const battlePlan = generateBattlePlan(analysis);
 
     // Apply hysteresis (Stabilization #1): Require 2 consecutive BUY_NOW scans
-    const hysteresisResult = applyHysteresis(symbol, battlePlan.verdict);
+    // SKIP hysteresis when market is closed - it's meant for live trading flickering prevention
+    const marketStatus = isMarketOpen();
+    let finalBattlePlan;
 
-    // Update battle plan with hysteresis-adjusted verdict
-    const finalBattlePlan = {
-      ...battlePlan,
-      originalVerdict: battlePlan.verdict,  // Store original for transparency
-      verdict: hysteresisResult.finalVerdict,
-      isPendingConfirmation: hysteresisResult.isPendingConfirmation,
-      previousVerdict: hysteresisResult.previousVerdict
-    };
+    if (marketStatus.isOpen) {
+      // Market is open: apply hysteresis to prevent flickering
+      const hysteresisResult = applyHysteresis(symbol, battlePlan.verdict);
 
-    // Adjust reasoning if pending confirmation
-    if (hysteresisResult.isPendingConfirmation) {
-      finalBattlePlan.reasoning = `⏳ PENDING CONFIRMATION: ${battlePlan.reasoning} (Requires confirmation in next scan)`;
-      finalBattlePlan.warnings = [
-        ...(battlePlan.warnings || []),
-        `First-time BUY signal - awaiting confirmation in next scan`
-      ];
+      finalBattlePlan = {
+        ...battlePlan,
+        originalVerdict: battlePlan.verdict,
+        verdict: hysteresisResult.finalVerdict,
+        isPendingConfirmation: hysteresisResult.isPendingConfirmation,
+        previousVerdict: hysteresisResult.previousVerdict
+      };
+
+      // Adjust reasoning if pending confirmation
+      if (hysteresisResult.isPendingConfirmation) {
+        finalBattlePlan.reasoning = `⏳ PENDING CONFIRMATION: ${battlePlan.reasoning} (Requires confirmation in next scan)`;
+        finalBattlePlan.warnings = [
+          ...(battlePlan.warnings || []),
+          `First-time BUY signal - awaiting confirmation in next scan`
+        ];
+        console.log(`[${symbol}] ⏳ PENDING: Original=${battlePlan.verdict} → Displayed=${hysteresisResult.finalVerdict} | RSI: ${rsi}`);
+      }
+    } else {
+      // Market is closed: skip hysteresis, use verdicts as-is
+      // Hysteresis is for live trading flickering - doesn't apply when prices aren't changing
+      finalBattlePlan = {
+        ...battlePlan,
+        originalVerdict: battlePlan.verdict,
+        isPendingConfirmation: false,
+        previousVerdict: null
+      };
     }
 
     // Detailed logging
-    if (hysteresisResult.isPendingConfirmation) {
-      console.log(`[${symbol}] ⏳ PENDING: Original=${battlePlan.verdict} → Displayed=${hysteresisResult.finalVerdict} | RSI: ${rsi}`);
-    } else if (battlePlan.verdict === 'BUY_NOW' && hysteresisResult.finalVerdict === 'BUY_NOW') {
+    if (!marketStatus.isOpen) {
+      // Market closed: log without hysteresis info
+      console.log(`[${symbol}] ✅ ${finalBattlePlan.verdict} | RSI: ${rsi} | Real Data: ${hasRealData ? 'YES' : 'NO'}`);
+    } else if (finalBattlePlan.isPendingConfirmation) {
+      // Already logged above in hysteresis block
+    } else if (battlePlan.verdict === 'BUY_NOW' && finalBattlePlan.verdict === 'BUY_NOW') {
       console.log(`[${symbol}] ✅✅ CONFIRMED BUY_NOW | RSI: ${rsi} | Real Data: ${hasRealData ? 'YES' : 'NO'}`);
     } else {
       console.log(`[${symbol}] ✅ ${finalBattlePlan.verdict} | RSI: ${rsi} | Real Data: ${hasRealData ? 'YES' : 'NO'}`);
