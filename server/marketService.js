@@ -475,6 +475,379 @@ function assessVolatility(atrData, price) {
   };
 }
 
+// =====================
+// FALSE POSITIVE PREVENTION (Item 5)
+// =====================
+
+/**
+ * Detect Bull Trap - Price crosses above SMA but lacks confirmation
+ * Bull traps occur when price breaks above resistance/SMA but fails to sustain
+ * @param {number} price - Current price
+ * @param {number} sma20 - 20-day SMA
+ * @param {number} sma50 - 50-day SMA
+ * @param {number} rsi - Current RSI
+ * @param {number} volumeRatio - Volume vs average
+ * @param {number[]} closes - Array of closing prices
+ * @returns {object} - Bull trap detection results
+ */
+function detectBullTrap(price, sma20, sma50, rsi, volumeRatio, closes) {
+  if (!price || !sma50 || !closes || closes.length < 5) {
+    return { isBullTrap: false, trapType: 'none', riskLevel: 'low' };
+  }
+
+  const warnings = [];
+  let trapScore = 0;
+
+  // Check 1: Price just barely above SMA50 (weak breakout)
+  const distanceAboveSMA50 = ((price - sma50) / sma50) * 100;
+  const justAboveSMA50 = distanceAboveSMA50 > 0 && distanceAboveSMA50 < 1;
+  if (justAboveSMA50) {
+    trapScore += 20;
+    warnings.push('Price barely above SMA50');
+  }
+
+  // Check 2: Price crossed above SMA50 recently but RSI is weak
+  const wasBelow5DaysAgo = closes.length >= 5 && closes[closes.length - 5] < sma50;
+  const crossedRecently = wasBelow5DaysAgo && price > sma50;
+  if (crossedRecently && rsi !== null && rsi < 55) {
+    trapScore += 30;
+    warnings.push('Recent SMA50 cross with weak RSI');
+  }
+
+  // Check 3: Low volume on breakout (no conviction)
+  if (price > sma50 && volumeRatio < 0.9) {
+    trapScore += 25;
+    warnings.push('Breakout on below-average volume');
+  }
+
+  // Check 4: SMA20 still below SMA50 (weak underlying trend)
+  if (sma20 !== null && sma20 < sma50 && price > sma50) {
+    trapScore += 20;
+    warnings.push('SMA20 still below SMA50');
+  }
+
+  // Check 5: Price touched SMA50 from above and bounced weakly
+  const recentLow = Math.min(...closes.slice(-3));
+  const touchedSMA50 = Math.abs(recentLow - sma50) / sma50 < 0.01; // Within 1% of SMA50
+  if (touchedSMA50 && distanceAboveSMA50 < 2) {
+    trapScore += 15;
+    warnings.push('Weak bounce off SMA50');
+  }
+
+  const isBullTrap = trapScore >= 40;
+  let trapType = 'none';
+  let riskLevel = 'low';
+
+  if (trapScore >= 60) {
+    trapType = 'high_risk_trap';
+    riskLevel = 'high';
+  } else if (trapScore >= 40) {
+    trapType = 'potential_trap';
+    riskLevel = 'medium';
+  } else if (trapScore >= 20) {
+    trapType = 'weak_signal';
+    riskLevel = 'low';
+  }
+
+  return {
+    isBullTrap,
+    trapScore,
+    trapType,
+    riskLevel,
+    warnings,
+    distanceAboveSMA50: parseFloat(distanceAboveSMA50.toFixed(2))
+  };
+}
+
+/**
+ * Detect Bearish RSI Divergence
+ * Bearish divergence: Price making higher highs while RSI making lower highs
+ * This often precedes price reversals
+ * @param {number[]} closes - Array of closing prices
+ * @param {number[]} highs - Array of high prices
+ * @param {number} period - Lookback period (default 14)
+ * @returns {object} - Divergence detection results
+ */
+function detectRSIDivergence(closes, highs, period = 14) {
+  if (!closes || !highs || closes.length < period + 10) {
+    return { hasBearishDivergence: false, divergenceStrength: 0, description: 'Insufficient data' };
+  }
+
+  // Calculate RSI values at different points
+  const calculateRSIAtPoint = (priceArray, endIndex, rsiPeriod) => {
+    if (endIndex < rsiPeriod + 1) return null;
+    const slice = priceArray.slice(0, endIndex + 1);
+    return calculateRSI(slice, rsiPeriod);
+  };
+
+  // Get RSI values at recent peak points
+  const recentRSI = calculateRSI(closes, period);
+  const midpointRSI = calculateRSIAtPoint(closes, closes.length - 5, period);
+  const earlierRSI = calculateRSIAtPoint(closes, closes.length - 10, period);
+
+  // Get price high points
+  const recentHigh = Math.max(...highs.slice(-5));
+  const earlierHigh = Math.max(...highs.slice(-15, -5));
+
+  if (recentRSI === null || earlierRSI === null) {
+    return { hasBearishDivergence: false, divergenceStrength: 0, description: 'Cannot calculate RSI' };
+  }
+
+  // Check for bearish divergence: Price higher high, RSI lower high
+  const priceHigherHigh = recentHigh > earlierHigh;
+  const rsiLowerHigh = recentRSI < earlierRSI;
+
+  const hasBearishDivergence = priceHigherHigh && rsiLowerHigh && recentRSI > 50;
+
+  // Calculate divergence strength
+  let divergenceStrength = 0;
+  if (hasBearishDivergence) {
+    const priceDiff = ((recentHigh - earlierHigh) / earlierHigh) * 100;
+    const rsiDiff = earlierRSI - recentRSI;
+    divergenceStrength = Math.min(100, (priceDiff + rsiDiff) * 5);
+  }
+
+  let description = 'No divergence detected';
+  if (hasBearishDivergence) {
+    if (divergenceStrength > 50) {
+      description = 'Strong bearish divergence - price up, RSI down';
+    } else {
+      description = 'Mild bearish divergence detected';
+    }
+  }
+
+  return {
+    hasBearishDivergence,
+    divergenceStrength: parseFloat(divergenceStrength.toFixed(0)),
+    recentRSI,
+    earlierRSI,
+    priceHigherHigh,
+    rsiLowerHigh,
+    description
+  };
+}
+
+/**
+ * Detect Price Extension - Stock has rallied too much too fast
+ * Extended stocks are prone to pullbacks
+ * @param {number} price - Current price
+ * @param {number} sma50 - 50-day SMA
+ * @param {number[]} closes - Array of closing prices
+ * @returns {object} - Extension detection results
+ */
+function detectPriceExtension(price, sma50, closes) {
+  if (!price || !sma50 || !closes || closes.length < 10) {
+    return { isExtended: false, extensionType: 'normal', extensionPercent: 0 };
+  }
+
+  const warnings = [];
+
+  // Check 1: Distance from SMA50
+  const distanceFromSMA50 = ((price - sma50) / sma50) * 100;
+  const farAboveSMA50 = distanceFromSMA50 > 8; // More than 8% above SMA50
+  const veryFarAboveSMA50 = distanceFromSMA50 > 15; // More than 15% above SMA50
+
+  // Check 2: 5-day rally
+  const fiveDayReturn = closes.length >= 5
+    ? ((price - closes[closes.length - 5]) / closes[closes.length - 5]) * 100
+    : 0;
+  const rapidRally = fiveDayReturn > 10; // More than 10% in 5 days
+
+  // Check 3: 10-day rally
+  const tenDayReturn = closes.length >= 10
+    ? ((price - closes[closes.length - 10]) / closes[closes.length - 10]) * 100
+    : 0;
+  const extendedRally = tenDayReturn > 15; // More than 15% in 10 days
+
+  if (veryFarAboveSMA50) {
+    warnings.push(`${distanceFromSMA50.toFixed(1)}% above SMA50 - very extended`);
+  } else if (farAboveSMA50) {
+    warnings.push(`${distanceFromSMA50.toFixed(1)}% above SMA50 - extended`);
+  }
+
+  if (rapidRally) {
+    warnings.push(`${fiveDayReturn.toFixed(1)}% rally in 5 days`);
+  }
+
+  if (extendedRally) {
+    warnings.push(`${tenDayReturn.toFixed(1)}% rally in 10 days`);
+  }
+
+  const isExtended = veryFarAboveSMA50 || (farAboveSMA50 && rapidRally) || extendedRally;
+
+  let extensionType = 'normal';
+  if (veryFarAboveSMA50 && rapidRally) {
+    extensionType = 'extreme_extension';
+  } else if (veryFarAboveSMA50 || (farAboveSMA50 && rapidRally)) {
+    extensionType = 'significant_extension';
+  } else if (farAboveSMA50 || rapidRally) {
+    extensionType = 'mild_extension';
+  }
+
+  return {
+    isExtended,
+    extensionType,
+    extensionPercent: parseFloat(distanceFromSMA50.toFixed(2)),
+    fiveDayReturn: parseFloat(fiveDayReturn.toFixed(2)),
+    tenDayReturn: parseFloat(tenDayReturn.toFixed(2)),
+    warnings
+  };
+}
+
+/**
+ * Detect Overbought Extremes
+ * RSI > 75 is extremely overbought and likely to pull back
+ * @param {number} rsi - Current RSI value
+ * @returns {object} - Overbought detection results
+ */
+function detectOverboughtExtreme(rsi) {
+  if (rsi === null) {
+    return { isOverboughtExtreme: false, severity: 'none', pullbackRisk: 'unknown' };
+  }
+
+  let severity = 'none';
+  let pullbackRisk = 'low';
+  let isOverboughtExtreme = false;
+
+  if (rsi >= 85) {
+    severity = 'extreme';
+    pullbackRisk = 'very_high';
+    isOverboughtExtreme = true;
+  } else if (rsi >= 80) {
+    severity = 'severe';
+    pullbackRisk = 'high';
+    isOverboughtExtreme = true;
+  } else if (rsi >= 75) {
+    severity = 'elevated';
+    pullbackRisk = 'moderate';
+    isOverboughtExtreme = true;
+  } else if (rsi >= 70) {
+    severity = 'mild';
+    pullbackRisk = 'low';
+  }
+
+  return {
+    isOverboughtExtreme,
+    severity,
+    pullbackRisk,
+    rsi,
+    description: isOverboughtExtreme
+      ? `RSI ${rsi} - ${severity} overbought, ${pullbackRisk} pullback risk`
+      : rsi >= 70 ? `RSI ${rsi} - approaching overbought` : 'Normal RSI levels'
+  };
+}
+
+/**
+ * Detect Weak Breakout - Breakout on low volume often fails
+ * @param {number} price - Current price
+ * @param {number} sma50 - 50-day SMA
+ * @param {number} volumeRatio - Current volume vs average
+ * @param {number[]} closes - Array of closing prices
+ * @returns {object} - Weak breakout detection results
+ */
+function detectWeakBreakout(price, sma50, volumeRatio, closes) {
+  if (!price || !sma50 || !closes || closes.length < 5) {
+    return { isWeakBreakout: false, breakoutQuality: 'unknown' };
+  }
+
+  // Check if this is a breakout (price recently crossed above SMA50)
+  const wasBelow = closes.slice(-5, -1).some(c => c < sma50);
+  const isAboveNow = price > sma50;
+  const isBreakout = wasBelow && isAboveNow;
+
+  if (!isBreakout) {
+    return { isWeakBreakout: false, breakoutQuality: 'no_breakout' };
+  }
+
+  // Assess breakout quality
+  const distanceAboveSMA50 = ((price - sma50) / sma50) * 100;
+
+  let breakoutQuality = 'strong';
+  let isWeakBreakout = false;
+  const warnings = [];
+
+  // Low volume breakout
+  if (volumeRatio < 0.8) {
+    breakoutQuality = 'very_weak';
+    isWeakBreakout = true;
+    warnings.push('Very low volume on breakout');
+  } else if (volumeRatio < 1.0) {
+    breakoutQuality = 'weak';
+    isWeakBreakout = true;
+    warnings.push('Below-average volume on breakout');
+  } else if (volumeRatio < 1.2) {
+    breakoutQuality = 'moderate';
+    warnings.push('Average volume - ideally want 1.2x+ for strong breakout');
+  }
+
+  // Barely clearing resistance
+  if (distanceAboveSMA50 < 1) {
+    if (breakoutQuality !== 'very_weak') {
+      breakoutQuality = isWeakBreakout ? breakoutQuality : 'questionable';
+    }
+    isWeakBreakout = true;
+    warnings.push('Price barely above SMA50');
+  }
+
+  return {
+    isWeakBreakout,
+    breakoutQuality,
+    volumeRatio,
+    distanceAboveSMA50: parseFloat(distanceAboveSMA50.toFixed(2)),
+    warnings
+  };
+}
+
+/**
+ * Check for System vs Analyst Divergence
+ * Warn when our technical signals diverge from analyst consensus
+ * @param {string} verdict - Our system's verdict (BUY_NOW, WATCH, etc.)
+ * @param {object} analystData - Analyst ratings from Finnhub
+ * @returns {object} - Divergence check results
+ */
+function checkAnalystDivergence(verdict, analystData) {
+  if (!analystData || !analystData.consensus) {
+    return { hasDivergence: false, divergenceType: 'no_data', warning: null };
+  }
+
+  const systemBullish = verdict === 'BUY_NOW';
+  const systemBearish = verdict === 'AVOID';
+
+  const analystBullish = ['Strong Buy', 'Buy'].includes(analystData.consensus);
+  const analystBearish = ['Strong Sell', 'Sell'].includes(analystData.consensus);
+  const analystNeutral = analystData.consensus === 'Hold';
+
+  let hasDivergence = false;
+  let divergenceType = 'aligned';
+  let warning = null;
+
+  // System says buy but analysts say sell
+  if (systemBullish && analystBearish) {
+    hasDivergence = true;
+    divergenceType = 'system_bullish_analysts_bearish';
+    warning = `Technical signals bullish but ${analystData.total} analysts rate ${analystData.consensus}`;
+  }
+  // System says buy but analysts are neutral/cautious
+  else if (systemBullish && analystNeutral) {
+    divergenceType = 'system_bullish_analysts_neutral';
+    warning = `Technical bullish but analysts are neutral (${analystData.total} analysts)`;
+  }
+  // System says avoid but analysts say buy (we're being more cautious - this is OK)
+  else if (systemBearish && analystBullish) {
+    divergenceType = 'system_cautious';
+    // No warning needed - we're being prudent
+  }
+
+  return {
+    hasDivergence,
+    divergenceType,
+    warning,
+    systemVerdict: verdict,
+    analystConsensus: analystData.consensus,
+    analystScore: analystData.consensusScore
+  };
+}
+
 /**
  * Calculate Average True Range (ATR) approximation
  * Uses average daily range as percentage over the specified period
@@ -874,10 +1247,18 @@ function generateBattlePlan(analysis) {
   const isStaleData = analysis.isStaleData;
   const atrData = analysis.atrData;
 
-  // NEW: Extract enhanced safety indicators
+  // Extract enhanced safety indicators (Item 2)
   const crossoverData = analysis.crossoverData || { deathCross: false, goldenCross: false };
   const fallingKnifeData = analysis.fallingKnifeData || { isFallingKnife: false, consecutiveDownDays: 0 };
   const volatilityData = analysis.volatilityData || { isHighVolatility: false, volatilityLevel: 'normal' };
+
+  // FALSE POSITIVE DETECTION DATA (Item 5)
+  const bullTrapData = analysis.bullTrapData || { isBullTrap: false, trapType: 'none' };
+  const divergenceData = analysis.divergenceData || { hasBearishDivergence: false };
+  const extensionData = analysis.extensionData || { isExtended: false };
+  const overboughtData = analysis.overboughtData || { isOverboughtExtreme: false };
+  const weakBreakoutData = analysis.weakBreakoutData || { isWeakBreakout: false };
+  const analystData = analysis.analystData || null;
 
   // Calculate entry zone (±1% from current price)
   const entryLow = parseFloat((price * 0.99).toFixed(2));
@@ -912,6 +1293,7 @@ function generateBattlePlan(analysis) {
   if (filterResults.volumeFilter) confidenceScore += 15;
   if (filterResults.priceFilter) confidenceScore += 5;
   if (filterResults.safetyFilter) confidenceScore += 15;
+  if (filterResults.falsePositiveFilter) confidenceScore += 10; // Bonus for clean signal (Item 5)
 
   // PENALTIES for risky conditions
   if (!hasRealData) {
@@ -943,6 +1325,74 @@ function generateBattlePlan(analysis) {
   }
   if (rsi !== null && rsi < 40) {
     confidenceScore -= 10; // Weak momentum
+  }
+
+  // =====================
+  // FALSE POSITIVE PENALTIES (Item 5)
+  // =====================
+
+  // Bull Trap penalty
+  if (bullTrapData.isBullTrap) {
+    if (bullTrapData.riskLevel === 'high') {
+      confidenceScore -= 35;
+      warnings.push(`BULL TRAP (HIGH RISK): ${bullTrapData.warnings.join(', ')}`);
+    } else {
+      confidenceScore -= 25;
+      warnings.push(`BULL TRAP: ${bullTrapData.warnings.join(', ')}`);
+    }
+  }
+
+  // Bearish RSI Divergence penalty
+  if (divergenceData.hasBearishDivergence) {
+    const penalty = divergenceData.divergenceStrength > 50 ? 30 : 20;
+    confidenceScore -= penalty;
+    warnings.push(`BEARISH DIVERGENCE: ${divergenceData.description}`);
+  }
+
+  // Price Extension penalty
+  if (extensionData.isExtended) {
+    if (extensionData.extensionType === 'extreme_extension') {
+      confidenceScore -= 40;
+      warnings.push(`EXTREME EXTENSION: ${extensionData.warnings.join(', ')}`);
+    } else if (extensionData.extensionType === 'significant_extension') {
+      confidenceScore -= 25;
+      warnings.push(`PRICE EXTENDED: ${extensionData.warnings.join(', ')}`);
+    } else {
+      confidenceScore -= 15;
+      warnings.push(`MILDLY EXTENDED: ${extensionData.extensionPercent}% above SMA50`);
+    }
+  }
+
+  // Overbought Extreme penalty
+  if (overboughtData.isOverboughtExtreme) {
+    if (overboughtData.severity === 'extreme') {
+      confidenceScore -= 35;
+      warnings.push(`EXTREME OVERBOUGHT: RSI ${overboughtData.rsi} - very high pullback risk`);
+    } else if (overboughtData.severity === 'severe') {
+      confidenceScore -= 25;
+      warnings.push(`SEVERELY OVERBOUGHT: RSI ${overboughtData.rsi}`);
+    } else {
+      confidenceScore -= 15;
+      warnings.push(`OVERBOUGHT: RSI ${overboughtData.rsi}`);
+    }
+  }
+
+  // Weak Breakout penalty
+  if (weakBreakoutData.isWeakBreakout) {
+    if (weakBreakoutData.breakoutQuality === 'very_weak') {
+      confidenceScore -= 30;
+      warnings.push(`VERY WEAK BREAKOUT: ${weakBreakoutData.warnings.join(', ')}`);
+    } else {
+      confidenceScore -= 20;
+      warnings.push(`WEAK BREAKOUT: ${weakBreakoutData.warnings.join(', ')}`);
+    }
+  }
+
+  // Check Analyst Divergence (informational, lighter penalty)
+  const analystDivergence = checkAnalystDivergence('BUY_NOW', analystData);
+  if (analystDivergence.hasDivergence) {
+    confidenceScore -= 15;
+    warnings.push(analystDivergence.warning);
   }
 
   // BONUSES for strong conditions
@@ -987,6 +1437,23 @@ function generateBattlePlan(analysis) {
     verdict = 'AVOID';
     reasoning = `Price below $10 - higher volatility and manipulation risk.`;
   }
+  // Priority 2.5: FALSE POSITIVE PREVENTION (Item 5)
+  else if (overboughtData.isOverboughtExtreme && overboughtData.severity === 'extreme') {
+    verdict = 'WAIT_FOR_DIP';
+    reasoning = `EXTREME OVERBOUGHT: RSI at ${overboughtData.rsi}. Very high probability of pullback. Wait for RSI to drop below 70.`;
+  }
+  else if (extensionData.isExtended && extensionData.extensionType === 'extreme_extension') {
+    verdict = 'WAIT_FOR_DIP';
+    reasoning = `EXTREMELY EXTENDED: ${extensionData.extensionPercent}% above SMA50 with ${extensionData.fiveDayReturn}% 5-day gain. High reversion risk. Wait for consolidation.`;
+  }
+  else if (bullTrapData.isBullTrap && bullTrapData.riskLevel === 'high') {
+    verdict = 'WATCH';
+    reasoning = `HIGH-RISK BULL TRAP detected: ${bullTrapData.warnings.join('. ')}. Wait for stronger breakout confirmation.`;
+  }
+  else if (divergenceData.hasBearishDivergence && divergenceData.divergenceStrength > 50) {
+    verdict = 'WATCH';
+    reasoning = `STRONG BEARISH DIVERGENCE: Price making higher highs but RSI declining (${divergenceData.earlierRSI} → ${divergenceData.recentRSI}). This often precedes reversals.`;
+  }
   // Priority 3: Conditional signals
   else if (passesAllFilters && confidenceScore >= 60) {
     verdict = 'BUY_NOW';
@@ -998,6 +1465,27 @@ function generateBattlePlan(analysis) {
   else if (passesAllFilters && confidenceScore >= 45) {
     verdict = 'BUY_NOW';
     reasoning = `Filters pass but confidence is moderate. RSI at ${rsi}, volume ${(volumeRatio * 100).toFixed(0)}% of average. Consider waiting for stronger confirmation.`;
+  }
+  // Priority 3.5: FALSE POSITIVE WARNINGS (milder cases - Item 5)
+  else if (bullTrapData.isBullTrap) {
+    verdict = 'WATCH';
+    reasoning = `Potential bull trap detected: ${bullTrapData.warnings.join('. ')}. Wait for clearer breakout confirmation.`;
+  }
+  else if (weakBreakoutData.isWeakBreakout) {
+    verdict = 'WATCH';
+    reasoning = `Weak breakout quality: ${weakBreakoutData.warnings.join('. ')}. Breakouts on low volume often fail.`;
+  }
+  else if (overboughtData.isOverboughtExtreme) {
+    verdict = 'WAIT_FOR_DIP';
+    reasoning = `Overbought (RSI ${overboughtData.rsi}): ${overboughtData.description}. Consider waiting for pullback.`;
+  }
+  else if (extensionData.isExtended) {
+    verdict = 'WAIT_FOR_DIP';
+    reasoning = `Price extended: ${extensionData.warnings.join('. ')}. May pull back to SMA50 area.`;
+  }
+  else if (divergenceData.hasBearishDivergence) {
+    verdict = 'WATCH';
+    reasoning = `Bearish divergence detected: ${divergenceData.description}. Monitor for trend weakening.`;
   }
   else if (filterResults.trendFilter && filterResults.priceFilter) {
     if (!filterResults.momentumFilter && rsi !== null) {
@@ -1017,6 +1505,9 @@ function generateBattlePlan(analysis) {
     } else if (!filterResults.safetyFilter) {
       verdict = 'WATCH';
       reasoning = `Technical setup is okay but safety concerns present. ${warnings.join('. ')}.`;
+    } else if (!filterResults.falsePositiveFilter) {
+      verdict = 'WATCH';
+      reasoning = `False positive warning flags present. ${warnings.slice(-1)[0] || 'Review signals carefully.'}`;
     } else {
       verdict = 'WATCH';
       reasoning = `Some positive signals but not all criteria met for high-confidence entry.`;
@@ -1096,6 +1587,26 @@ function generateBattlePlan(analysis) {
     whyFactors.push(`🔇 VOLUME: ${(volumeRatio * 100).toFixed(0)}% of average (low)`);
   }
 
+  // FALSE POSITIVE WARNINGS (Item 5)
+  if (bullTrapData.isBullTrap) {
+    whyFactors.push(`🪤 BULL TRAP: ${bullTrapData.trapType.replace('_', ' ')} - ${bullTrapData.riskLevel} risk`);
+  }
+  if (divergenceData.hasBearishDivergence) {
+    whyFactors.push(`📉 RSI DIVERGENCE: Bearish (strength: ${divergenceData.divergenceStrength}%)`);
+  }
+  if (extensionData.isExtended) {
+    whyFactors.push(`📏 EXTENDED: ${extensionData.extensionPercent}% above SMA50`);
+  }
+  if (overboughtData.isOverboughtExtreme) {
+    whyFactors.push(`🔥 OVERBOUGHT EXTREME: RSI ${overboughtData.rsi} (${overboughtData.severity})`);
+  }
+  if (weakBreakoutData.isWeakBreakout) {
+    whyFactors.push(`⚠️ WEAK BREAKOUT: ${weakBreakoutData.breakoutQuality}`);
+  }
+  if (analystDivergence.hasDivergence) {
+    whyFactors.push(`📊 ANALYST DIVERGENCE: ${analystDivergence.analystConsensus} vs our signal`);
+  }
+
   // Position sizing (adjusted for volatility)
   const basePositionValue = 5000;
   const adjustedPositionValue = basePositionValue * (volatilityData.riskMultiplier || 1);
@@ -1110,8 +1621,9 @@ function generateBattlePlan(analysis) {
     warnings, // NEW: Array of risk warnings
     whyFactors,
     filterResults,
-    // NEW: Safety data for transparency
+    // Safety data for transparency (Items 2 & 5)
     safetyData: {
+      // Item 2: Core safety indicators
       deathCross: crossoverData.deathCross,
       goldenCross: crossoverData.goldenCross,
       crossStatus: crossoverData.crossStatus,
@@ -1121,7 +1633,21 @@ function generateBattlePlan(analysis) {
       fiveDayReturn: fallingKnifeData.fiveDayReturn,
       volatilityLevel: volatilityData.volatilityLevel,
       isHighVolatility: volatilityData.isHighVolatility,
-      isStaleData
+      isStaleData,
+      // Item 5: False Positive Prevention
+      isBullTrap: bullTrapData.isBullTrap,
+      bullTrapRiskLevel: bullTrapData.riskLevel,
+      hasBearishDivergence: divergenceData.hasBearishDivergence,
+      divergenceStrength: divergenceData.divergenceStrength,
+      isExtended: extensionData.isExtended,
+      extensionType: extensionData.extensionType,
+      extensionPercent: extensionData.extensionPercent,
+      isOverboughtExtreme: overboughtData.isOverboughtExtreme,
+      overboughtSeverity: overboughtData.severity,
+      isWeakBreakout: weakBreakoutData.isWeakBreakout,
+      breakoutQuality: weakBreakoutData.breakoutQuality,
+      analystDivergence: analystDivergence.hasDivergence,
+      analystConsensus: analystData?.consensus || null
     },
     entryZone: { low: entryLow, high: entryHigh, current: price },
     profitTarget: {
@@ -1186,6 +1712,13 @@ export async function analyzeStock(symbol) {
     let fallingKnifeData = { consecutiveDownDays: 0, isFallingKnife: false, recentTrend: 'unknown' };
     let volatilityData = { isHighVolatility: false, volatilityLevel: 'unknown', riskMultiplier: 1 };
 
+    // FALSE POSITIVE DETECTION DATA (Item 5)
+    let bullTrapData = { isBullTrap: false, trapType: 'none', riskLevel: 'low' };
+    let divergenceData = { hasBearishDivergence: false, divergenceStrength: 0 };
+    let extensionData = { isExtended: false, extensionType: 'normal' };
+    let overboughtData = { isOverboughtExtreme: false, severity: 'none' };
+    let weakBreakoutData = { isWeakBreakout: false, breakoutQuality: 'unknown' };
+
     if (historical && historical.closes && historical.closes.length >= 50) {
       const closes = historical.closes;
       const volumes = historical.volumes;
@@ -1209,7 +1742,30 @@ export async function analyzeStock(symbol) {
       // NEW: Assess volatility risk
       volatilityData = assessVolatility(atrData, quote.price);
 
+      // Calculate volume ratio for false positive checks
+      const currentVolume = quote.volume || 0;
+      const tempVolumeRatio = calculateVolumeRatio(currentVolume, avgVolume20 || currentVolume);
+
+      // FALSE POSITIVE DETECTION (Item 5)
+      // 1. Bull Trap Detection
+      bullTrapData = detectBullTrap(quote.price, sma20, sma50, rsi, tempVolumeRatio, closes);
+
+      // 2. Bearish RSI Divergence Detection
+      divergenceData = detectRSIDivergence(closes, highs, 14);
+
+      // 3. Price Extension Detection
+      extensionData = detectPriceExtension(quote.price, sma50, closes);
+
+      // 4. Overbought Extreme Detection
+      overboughtData = detectOverboughtExtreme(rsi);
+
+      // 5. Weak Breakout Detection
+      weakBreakoutData = detectWeakBreakout(quote.price, sma50, tempVolumeRatio, closes);
+
       console.log(`[${symbol}] Indicators: SMA50=${sma50?.toFixed(2)}, RSI=${rsi}, ATR=${atrData?.atr || 'N/A'}, Cross=${crossoverData.crossStatus}, DownDays=${fallingKnifeData.consecutiveDownDays}`);
+      if (bullTrapData.isBullTrap || divergenceData.hasBearishDivergence || extensionData.isExtended || overboughtData.isOverboughtExtreme) {
+        console.log(`[${symbol}] ⚠️ FALSE POSITIVE FLAGS: BullTrap=${bullTrapData.isBullTrap}, Divergence=${divergenceData.hasBearishDivergence}, Extended=${extensionData.isExtended}, Overbought=${overboughtData.isOverboughtExtreme}`);
+      }
     } else {
       console.log(`[${symbol}] Insufficient historical data`);
     }
@@ -1230,9 +1786,16 @@ export async function analyzeStock(symbol) {
     const momentumFilter = rsi !== null && rsi >= 50 && rsi <= 70;
     const volumeFilter = volumeRatio >= 1.10;
     const priceFilter = quote.price > 10;
-    const safetyFilter = !fallingKnifeData.isFallingKnife && !isStaleData; // NEW: No falling knives, no stale data
+    const safetyFilter = !fallingKnifeData.isFallingKnife && !isStaleData; // No falling knives, no stale data
 
-    const passesAllFilters = hasRealData && trendFilter && momentumFilter && volumeFilter && priceFilter && safetyFilter;
+    // FALSE POSITIVE FILTER (Item 5) - Prevent false buy signals
+    const falsePositiveFilter = !bullTrapData.isBullTrap &&
+                                 !divergenceData.hasBearishDivergence &&
+                                 !extensionData.isExtended &&
+                                 !overboughtData.isOverboughtExtreme &&
+                                 !weakBreakoutData.isWeakBreakout;
+
+    const passesAllFilters = hasRealData && trendFilter && momentumFilter && volumeFilter && priceFilter && safetyFilter && falsePositiveFilter;
 
     // Build analysis
     const analysis = {
@@ -1253,12 +1816,19 @@ export async function analyzeStock(symbol) {
       fallingKnifeData, // Consecutive down days detection
       volatilityData, // Volatility risk assessment
       analystData, // Wall Street analyst ratings from Finnhub
+      // FALSE POSITIVE DETECTION DATA (Item 5)
+      bullTrapData, // Bull trap detection
+      divergenceData, // RSI divergence detection
+      extensionData, // Price extension detection
+      overboughtData, // Overbought extreme detection
+      weakBreakoutData, // Weak breakout detection
       filterResults: {
         trendFilter,
         momentumFilter,
         volumeFilter,
         priceFilter,
-        safetyFilter // NEW: No falling knife, no stale data
+        safetyFilter, // No falling knife, no stale data
+        falsePositiveFilter // FALSE POSITIVE FILTER (Item 5)
       }
     };
 
