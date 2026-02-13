@@ -271,9 +271,123 @@ const SECTOR_MAP = {
 const quoteCache = new Map();
 const historicalCache = new Map();
 const analystCache = new Map();
-const QUOTE_CACHE_TTL = 60000;       // 60 seconds for quotes (stabilization measure #4)
+const QUOTE_CACHE_TTL_MARKET_OPEN = 60000;    // 60 seconds when market is open
+const QUOTE_CACHE_TTL_MARKET_CLOSED = Infinity; // Never expire when market is closed
 const HISTORICAL_CACHE_TTL = 300000; // 5 minutes for historical data
 const ANALYST_CACHE_TTL = 3600000;   // 1 hour for analyst data (changes infrequently)
+
+// Scan results cache for market-closed consistency
+let lastScanResults = null;
+let lastScanTimestamp = null;
+let lastMarketOpenState = null;
+
+// =====================
+// MARKET HOURS DETECTION
+// =====================
+
+// US Market holidays for 2024-2026 (market closed)
+const MARKET_HOLIDAYS = new Set([
+  // 2024
+  '2024-01-01', '2024-01-15', '2024-02-19', '2024-03-29', '2024-05-27',
+  '2024-06-19', '2024-07-04', '2024-09-02', '2024-11-28', '2024-12-25',
+  // 2025
+  '2025-01-01', '2025-01-20', '2025-02-17', '2025-04-18', '2025-05-26',
+  '2025-06-19', '2025-07-04', '2025-09-01', '2025-11-27', '2025-12-25',
+  // 2026
+  '2026-01-01', '2026-01-19', '2026-02-16', '2026-04-03', '2026-05-25',
+  '2026-06-19', '2026-07-03', '2026-09-07', '2026-11-26', '2026-12-25',
+]);
+
+// Early close days (1:00 PM ET instead of 4:00 PM)
+const EARLY_CLOSE_DAYS = new Set([
+  // 2024
+  '2024-07-03', '2024-11-29', '2024-12-24',
+  // 2025
+  '2025-07-03', '2025-11-28', '2025-12-24',
+  // 2026
+  '2026-02-13', '2026-07-02', '2026-11-27', '2026-12-24',
+]);
+
+/**
+ * Get current Eastern Time components
+ * @returns {object} - { hours, minutes, dayOfWeek, dateKey }
+ */
+function getEasternTimeComponents() {
+  const now = new Date();
+  const etFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    minute: 'numeric',
+    weekday: 'short',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour12: false,
+  });
+
+  const parts = etFormatter.formatToParts(now);
+  const getPart = (type) => parts.find(p => p.type === type)?.value || '';
+
+  const hours = parseInt(getPart('hour'), 10);
+  const minutes = parseInt(getPart('minute'), 10);
+  const weekday = getPart('weekday');
+  const year = getPart('year');
+  const month = getPart('month');
+  const day = getPart('day');
+
+  const dayMap = { 'Sun': 0, 'Mon': 1, 'Tue': 2, 'Wed': 3, 'Thu': 4, 'Fri': 5, 'Sat': 6 };
+
+  return {
+    hours,
+    minutes,
+    dayOfWeek: dayMap[weekday] ?? 0,
+    dateKey: `${year}-${month}-${day}`,
+  };
+}
+
+/**
+ * Check if US stock market is currently open
+ * @returns {object} - { isOpen, isEarlyClose, reason, nextOpenTime }
+ */
+function isMarketOpen() {
+  const et = getEasternTimeComponents();
+  const currentMinutes = et.hours * 60 + et.minutes;
+
+  // Market hours in minutes from midnight (ET)
+  const marketOpen = 9 * 60 + 30;  // 9:30 AM ET
+  const earlyClose = EARLY_CLOSE_DAYS.has(et.dateKey);
+  const marketClose = earlyClose ? 13 * 60 : 16 * 60;  // 1:00 PM or 4:00 PM ET
+
+  // Check weekend
+  if (et.dayOfWeek === 0 || et.dayOfWeek === 6) {
+    return { isOpen: false, isEarlyClose: false, reason: 'weekend' };
+  }
+
+  // Check holiday
+  if (MARKET_HOLIDAYS.has(et.dateKey)) {
+    return { isOpen: false, isEarlyClose: false, reason: 'holiday' };
+  }
+
+  // Check if within market hours
+  if (currentMinutes >= marketOpen && currentMinutes < marketClose) {
+    return { isOpen: true, isEarlyClose: earlyClose, reason: 'market_hours' };
+  }
+
+  // Before market open
+  if (currentMinutes < marketOpen) {
+    return { isOpen: false, isEarlyClose: earlyClose, reason: 'before_open' };
+  }
+
+  // After market close
+  return { isOpen: false, isEarlyClose: false, reason: 'after_close' };
+}
+
+/**
+ * Get quote cache TTL based on market status
+ */
+function getQuoteCacheTTL() {
+  return isMarketOpen().isOpen ? QUOTE_CACHE_TTL_MARKET_OPEN : QUOTE_CACHE_TTL_MARKET_CLOSED;
+}
 
 // =====================
 // HYSTERESIS SYSTEM (Stabilization #1)
@@ -330,17 +444,29 @@ function applyHysteresis(symbol, currentVerdict) {
 
 /**
  * Clean up old verdict history entries
+ * Only runs when market is OPEN to preserve history during closed periods
  */
 function cleanupVerdictHistory() {
+  // Don't clean up when market is closed - preserve hysteresis state
+  if (!isMarketOpen().isOpen) {
+    console.log('📊 Verdict history cleanup skipped (market closed)');
+    return;
+  }
+
   const now = Date.now();
+  let cleaned = 0;
   for (const [symbol, history] of verdictHistoryCache.entries()) {
     if (now - history.timestamp > VERDICT_HISTORY_TTL) {
       verdictHistoryCache.delete(symbol);
+      cleaned++;
     }
+  }
+  if (cleaned > 0) {
+    console.log(`📊 Cleaned up ${cleaned} old verdict history entries`);
   }
 }
 
-// Clean up verdict history periodically (every 5 minutes)
+// Clean up verdict history periodically (every 5 minutes) - only during market hours
 setInterval(cleanupVerdictHistory, 300000);
 
 // =====================
@@ -1131,7 +1257,10 @@ export async function getQuote(symbol, useCache = true) {
 
   if (useCache) {
     const cached = quoteCache.get(upperSymbol);
-    if (cached && Date.now() - cached.timestamp < QUOTE_CACHE_TTL) {
+    const cacheTTL = getQuoteCacheTTL();
+    // When market is closed, cache never expires (Infinity)
+    // When market is open, cache expires after 60 seconds
+    if (cached && (cacheTTL === Infinity || Date.now() - cached.timestamp < cacheTTL)) {
       return { ...cached.data, fromCache: true };
     }
   }
@@ -1169,6 +1298,10 @@ export async function getQuote(symbol, useCache = true) {
     const change = price - prevClose;
     const changePercent = (change / prevClose) * 100;
 
+    // Use actual bar timestamp from Alpaca, not current time
+    // This ensures staleness checks are based on when data was valid, not when fetched
+    const barTimestamp = latestBar.Timestamp ? new Date(latestBar.Timestamp).getTime() : Date.now();
+
     const result = {
       symbol: upperSymbol,
       price: price,
@@ -1183,12 +1316,14 @@ export async function getQuote(symbol, useCache = true) {
       vwap: latestBar.VWAP || price,
       name: upperSymbol,
       sector: SECTOR_MAP[upperSymbol] || 'Unknown',
-      timestamp: Date.now(),
-      isLive: true,
+      timestamp: barTimestamp,  // Use actual bar timestamp, not fetch time
+      dataDate: latestBar.Timestamp,  // Store the actual date string for reference
+      isLive: isMarketOpen().isOpen,  // Only "live" if market is actually open
       source: 'Alpaca'
     };
 
-    quoteCache.set(upperSymbol, { data: result, timestamp: Date.now() });
+    // Cache with the bar timestamp (not current time) for consistent staleness checks
+    quoteCache.set(upperSymbol, { data: result, timestamp: barTimestamp });
     console.log(`[${upperSymbol}] ✅ $${price.toFixed(2)} (${changePercent >= 0 ? '+' : ''}${changePercent.toFixed(2)}%)`);
     return result;
 
@@ -1946,10 +2081,21 @@ export async function analyzeStock(symbol) {
 // =====================
 
 export async function scanMarket(symbols = DEFAULT_STOCKS) {
+  const marketStatus = isMarketOpen();
+
   console.log(`\n========================================`);
   console.log(`🦙 ALPACA SCANNER: ${symbols.length} stocks`);
+  console.log(`📊 Market Status: ${marketStatus.isOpen ? 'OPEN' : 'CLOSED'} (${marketStatus.reason})`);
   console.log(`========================================\n`);
 
+  // When market is closed, return cached results for consistency
+  // This prevents different results on each refresh when prices aren't changing
+  if (!marketStatus.isOpen && lastScanResults && lastScanResults.length > 0) {
+    console.log(`📦 Market closed - returning cached scan results (${lastScanResults.length} stocks)`);
+    return lastScanResults;
+  }
+
+  // Market is open OR no cached results - perform fresh scan
   const results = [];
 
   for (const symbol of symbols) {
@@ -1969,15 +2115,26 @@ export async function scanMarket(symbols = DEFAULT_STOCKS) {
   console.log(`With real data: ${withRealData}/${results.length}`);
   console.log(`========================================\n`);
 
-  // Sort by verdict priority
+  // Sort by verdict priority, then confidence score, then symbol (for deterministic order)
   const verdictPriority = { 'BUY_NOW': 0, 'WAIT_FOR_DIP': 1, 'WATCH': 2, 'AVOID': 3 };
 
-  return results.sort((a, b) => {
+  const sortedResults = results.sort((a, b) => {
     const aPriority = verdictPriority[a.battlePlan.verdict] ?? 4;
     const bPriority = verdictPriority[b.battlePlan.verdict] ?? 4;
     if (aPriority !== bPriority) return aPriority - bPriority;
-    return b.battlePlan.confidenceScore - a.battlePlan.confidenceScore;
+    if (b.battlePlan.confidenceScore !== a.battlePlan.confidenceScore) {
+      return b.battlePlan.confidenceScore - a.battlePlan.confidenceScore;
+    }
+    // Final tiebreaker: symbol name (alphabetical) for deterministic order
+    return a.symbol.localeCompare(b.symbol);
   });
+
+  // Cache the sorted results for market-closed consistency
+  lastScanResults = sortedResults;
+  lastScanTimestamp = Date.now();
+  lastMarketOpenState = marketStatus.isOpen;
+
+  return sortedResults;
 }
 
 // =====================
