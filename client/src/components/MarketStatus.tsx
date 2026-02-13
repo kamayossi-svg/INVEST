@@ -23,136 +23,125 @@ const MARKET_HOLIDAYS: string[] = [
 ];
 
 // Early close days (1:00 PM ET instead of 4:00 PM)
+// Typically: Day before Independence Day, Day after Thanksgiving, Christmas Eve,
+// and sometimes day before other holidays
 const EARLY_CLOSE_DAYS: string[] = [
   // 2024
   '2024-07-03', '2024-11-29', '2024-12-24',
   // 2025
   '2025-07-03', '2025-11-28', '2025-12-24',
   // 2026
-  '2026-07-02', '2026-11-27', '2026-12-24',
+  '2026-02-13', // Day before Presidents Day (Feb 16)
+  '2026-07-02', // Day before Independence Day (July 3 is the holiday, so July 2 is early close)
+  '2026-11-27', // Day after Thanksgiving
+  '2026-12-24', // Christmas Eve
 ];
 
-function getEasternTime(): Date {
-  // Get current time in Eastern Time
+// Get current time components in Eastern Time
+function getEasternTimeComponents(): { hours: number; minutes: number; dayOfWeek: number; dateKey: string } {
   const now = new Date();
-  const etString = now.toLocaleString('en-US', { timeZone: 'America/New_York' });
-  return new Date(etString);
-}
-
-function getIsraelTime(date: Date): Date {
-  const israelString = date.toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' });
-  return new Date(israelString);
-}
-
-function formatTimeIsrael(date: Date): string {
-  return date.toLocaleTimeString('he-IL', {
-    timeZone: 'Asia/Jerusalem',
-    hour: '2-digit',
-    minute: '2-digit',
+  const etFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    minute: 'numeric',
+    weekday: 'short',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
     hour12: false,
   });
+
+  const parts = etFormatter.formatToParts(now);
+  const getPart = (type: string) => parts.find(p => p.type === type)?.value || '';
+
+  const hours = parseInt(getPart('hour'), 10);
+  const minutes = parseInt(getPart('minute'), 10);
+  const weekday = getPart('weekday');
+  const year = getPart('year');
+  const month = getPart('month');
+  const day = getPart('day');
+
+  const dayMap: Record<string, number> = { 'Sun': 0, 'Mon': 1, 'Tue': 2, 'Wed': 3, 'Thu': 4, 'Fri': 5, 'Sat': 6 };
+
+  return {
+    hours,
+    minutes,
+    dayOfWeek: dayMap[weekday] ?? 0,
+    dateKey: `${year}-${month}-${day}`,
+  };
 }
 
-function formatDateKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+// Fixed Israel times for market events
+// US Market: 9:30 AM - 4:00 PM ET (or 1:00 PM on early close days)
+// Israel is 7 hours ahead of ET (winter) or 6 hours (summer DST overlap)
+const ISRAEL_MARKET_OPEN = '16:30';   // 9:30 AM ET
+const ISRAEL_MARKET_CLOSE = '23:00';  // 4:00 PM ET
+const ISRAEL_EARLY_CLOSE = '20:00';   // 1:00 PM ET
+
+function isWeekend(dayOfWeek: number): boolean {
+  return dayOfWeek === 0 || dayOfWeek === 6; // Sunday = 0, Saturday = 6
 }
 
-function isWeekend(date: Date): boolean {
-  const day = date.getDay();
-  return day === 0 || day === 6; // Sunday = 0, Saturday = 6
+function isHoliday(dateKey: string): boolean {
+  return MARKET_HOLIDAYS.includes(dateKey);
 }
 
-function isHoliday(date: Date): boolean {
-  return MARKET_HOLIDAYS.includes(formatDateKey(date));
-}
-
-function isEarlyCloseDay(date: Date): boolean {
-  return EARLY_CLOSE_DAYS.includes(formatDateKey(date));
-}
-
-function getNextTradingDay(fromDate: Date): Date {
-  const next = new Date(fromDate);
-  next.setDate(next.getDate() + 1);
-
-  // Skip weekends and holidays
-  while (isWeekend(next) || isHoliday(next)) {
-    next.setDate(next.getDate() + 1);
-  }
-
-  return next;
+function isEarlyCloseDay(dateKey: string): boolean {
+  return EARLY_CLOSE_DAYS.includes(dateKey);
 }
 
 function getMarketStatus(): MarketStatusInfo {
-  const etNow = getEasternTime();
-  const hours = etNow.getHours();
-  const minutes = etNow.getMinutes();
-  const currentMinutes = hours * 60 + minutes;
+  const et = getEasternTimeComponents();
+  const currentMinutes = et.hours * 60 + et.minutes;
+  const earlyClose = isEarlyCloseDay(et.dateKey);
 
-  const dateKey = formatDateKey(etNow);
-  const earlyClose = isEarlyCloseDay(etNow);
-
-  // Market hours in minutes from midnight
-  const marketOpen = 9 * 60 + 30;  // 9:30 AM
-  const marketClose = earlyClose ? 13 * 60 : 16 * 60;  // 1:00 PM or 4:00 PM
+  // Market hours in minutes from midnight (ET)
+  const marketOpen = 9 * 60 + 30;  // 9:30 AM ET
+  const marketClose = earlyClose ? 13 * 60 : 16 * 60;  // 1:00 PM or 4:00 PM ET
 
   // Check if today is a trading day
-  if (isWeekend(etNow) || isHoliday(etNow)) {
-    // Market is closed - find next opening
-    const nextDay = getNextTradingDay(etNow);
-    nextDay.setHours(9, 30, 0, 0);
-
+  if (isWeekend(et.dayOfWeek) || isHoliday(et.dateKey)) {
+    // Market is closed - show next opening time
     return {
       isOpen: false,
       isEarlyClose: false,
       statusText: 'closed',
-      timeText: formatTimeIsrael(nextDay),
-      nextEventTime: nextDay,
+      timeText: ISRAEL_MARKET_OPEN, // Opens at 16:30 Israel time
+      nextEventTime: null,
     };
   }
 
   // Check if within market hours
   if (currentMinutes >= marketOpen && currentMinutes < marketClose) {
     // Market is OPEN
-    const closeTime = new Date(etNow);
-    closeTime.setHours(earlyClose ? 13 : 16, 0, 0, 0);
-
     return {
       isOpen: true,
       isEarlyClose: earlyClose,
       statusText: earlyClose ? 'earlyClose' : 'open',
-      timeText: formatTimeIsrael(closeTime),
-      nextEventTime: closeTime,
+      timeText: earlyClose ? ISRAEL_EARLY_CLOSE : ISRAEL_MARKET_CLOSE, // Closes at 20:00 or 23:00 Israel time
+      nextEventTime: null,
     };
   }
 
   // Market is closed but it's a trading day
   if (currentMinutes < marketOpen) {
     // Before market open today
-    const openTime = new Date(etNow);
-    openTime.setHours(9, 30, 0, 0);
-
     return {
       isOpen: false,
-      isEarlyClose: false,
-      statusText: 'closed',
-      timeText: formatTimeIsrael(openTime),
-      nextEventTime: openTime,
+      isEarlyClose: earlyClose, // Show if today will be early close
+      statusText: earlyClose ? 'earlyCloseToday' : 'closed',
+      timeText: ISRAEL_MARKET_OPEN, // Opens at 16:30 Israel time
+      nextEventTime: null,
     };
   }
 
-  // After market close - find next trading day
-  const nextDay = getNextTradingDay(etNow);
-  nextDay.setHours(9, 30, 0, 0);
-
+  // After market close - show next opening
   return {
     isOpen: false,
     isEarlyClose: false,
     statusText: 'closed',
-    timeText: formatTimeIsrael(nextDay),
-    nextEventTime: nextDay,
+    timeText: ISRAEL_MARKET_OPEN, // Next open at 16:30 Israel time
+    nextEventTime: null,
   };
 }
 
@@ -174,7 +163,8 @@ export default function MarketStatus() {
     if (isRTL) {
       switch (status.statusText) {
         case 'open': return 'השוק פתוח';
-        case 'earlyClose': return 'השוק נסגר מוקדם היום';
+        case 'earlyClose': return 'נסגר מוקדם היום';
+        case 'earlyCloseToday': return 'סגירה מוקדמת היום';
         case 'closed': return 'השוק סגור';
         default: return 'השוק סגור';
       }
@@ -182,6 +172,7 @@ export default function MarketStatus() {
       switch (status.statusText) {
         case 'open': return 'Market Open';
         case 'earlyClose': return 'Early Close Today';
+        case 'earlyCloseToday': return 'Early Close Today';
         case 'closed': return 'Market Closed';
         default: return 'Market Closed';
       }
@@ -191,6 +182,9 @@ export default function MarketStatus() {
   const getTimeLabel = () => {
     if (status.isOpen) {
       return isRTL ? `נסגר ב-${status.timeText}` : `Closes at ${status.timeText}`;
+    } else if (status.statusText === 'earlyCloseToday') {
+      // Before market opens on an early close day
+      return isRTL ? `נפתח ב-${ISRAEL_MARKET_OPEN}, נסגר ב-${ISRAEL_EARLY_CLOSE}` : `Opens ${ISRAEL_MARKET_OPEN}, Closes ${ISRAEL_EARLY_CLOSE}`;
     } else {
       return isRTL ? `נפתח ב-${status.timeText}` : `Opens at ${status.timeText}`;
     }
@@ -198,13 +192,15 @@ export default function MarketStatus() {
 
   const getDotColor = () => {
     if (status.isOpen && !status.isEarlyClose) return 'bg-green-500';
-    if (status.isEarlyClose) return 'bg-yellow-500';
+    if (status.isOpen && status.isEarlyClose) return 'bg-yellow-500';
+    if (status.statusText === 'earlyCloseToday') return 'bg-yellow-500';
     return 'bg-red-500';
   };
 
   const getTextColor = () => {
     if (status.isOpen && !status.isEarlyClose) return 'text-green-400';
-    if (status.isEarlyClose) return 'text-yellow-400';
+    if (status.isOpen && status.isEarlyClose) return 'text-yellow-400';
+    if (status.statusText === 'earlyCloseToday') return 'text-yellow-400';
     return 'text-red-400';
   };
 
