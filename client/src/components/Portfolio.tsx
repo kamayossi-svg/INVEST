@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { Portfolio as PortfolioType, Holding } from '../types';
 import { useLanguage } from '../i18n';
 import SellModal from './SellModal';
+import AnalysisModal from './AnalysisModal';
 
 interface PortfolioProps {
   data: PortfolioType | null;
@@ -30,11 +31,13 @@ function formatPercent(value: number): string {
 function HoldingCard({
   holding,
   onSell,
+  onAnalyze,
 }: {
   holding: Holding;
   onSell: () => void;
+  onAnalyze: () => void;
 }) {
-  const { t } = useLanguage();
+  const { t, isRTL } = useLanguage();
   const isProfit = holding.unrealizedPL >= 0;
 
   return (
@@ -129,12 +132,22 @@ function HoldingCard({
         </div>
       )}
 
-      <button
-        onClick={onSell}
-        className="w-full py-3 bg-red-600/20 hover:bg-red-600/30 text-red-400 font-medium rounded-xl transition-colors border border-red-500/20"
-      >
-        {t('sellShares')}
-      </button>
+      {/* Action Buttons */}
+      <div className="flex gap-3">
+        <button
+          onClick={onAnalyze}
+          className="flex-1 py-3 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 font-medium rounded-xl transition-colors border border-blue-500/20 flex items-center justify-center gap-2"
+        >
+          <span>🔬</span>
+          {isRTL ? 'עדכן ניתוח' : 'Re-analyze'}
+        </button>
+        <button
+          onClick={onSell}
+          className="flex-1 py-3 bg-red-600/20 hover:bg-red-600/30 text-red-400 font-medium rounded-xl transition-colors border border-red-500/20"
+        >
+          {t('sellShares')}
+        </button>
+      </div>
     </div>
   );
 }
@@ -150,6 +163,7 @@ export default function Portfolio({
   const { t, isRTL } = useLanguage();
   const [selectedHolding, setSelectedHolding] = useState<Holding | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [analyzeSymbol, setAnalyzeSymbol] = useState<string | null>(null);
 
   if (loading && !data) {
     return (
@@ -275,6 +289,7 @@ export default function Portfolio({
               key={holding.symbol}
               holding={holding}
               onSell={() => setSelectedHolding(holding)}
+              onAnalyze={() => setAnalyzeSymbol(holding.symbol)}
             />
           ))}
         </div>
@@ -315,6 +330,14 @@ export default function Portfolio({
             setSelectedHolding(null);
             onTradeComplete();
           }}
+        />
+      )}
+
+      {/* Analysis Modal */}
+      {analyzeSymbol && (
+        <AnalysisModal
+          symbol={analyzeSymbol}
+          onClose={() => setAnalyzeSymbol(null)}
         />
       )}
 

@@ -22,6 +22,7 @@ import {
   getQuotes,
   scanMarket,
   searchStocks,
+  analyzeStock,
   DEFAULT_STOCKS
 } from './marketService.js';
 import { startPriceMonitor } from './priceMonitor.js';
@@ -90,6 +91,21 @@ app.get('/api/market/search', async (req, res) => {
     res.json({ success: true, data: results });
   } catch (error) {
     console.error('Search error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Analyze a single stock (full battle plan analysis)
+app.get('/api/market/analyze/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const analysis = await analyzeStock(symbol.toUpperCase());
+    if (!analysis) {
+      return res.status(404).json({ success: false, error: 'Unable to analyze stock' });
+    }
+    res.json({ success: true, data: analysis, timestamp: Date.now() });
+  } catch (error) {
+    console.error('Analyze error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

@@ -154,3 +154,22 @@ export function useAlerts() {
 
   return { data, loading, refresh, markRead, markAllRead };
 }
+
+export function useStockAnalysis() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const analyze = useCallback(async (symbol: string): Promise<StockAnalysis | null> => {
+    setLoading(true);
+    setError(null);
+    const result = await fetchApi<StockAnalysis>(`/market/analyze/${symbol}`);
+    setLoading(false);
+    if (result.success && result.data) {
+      return result.data;
+    }
+    setError(result.error || 'Failed to analyze stock');
+    return null;
+  }, []);
+
+  return { analyze, loading, error };
+}
