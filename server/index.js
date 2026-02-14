@@ -23,6 +23,7 @@ import {
   scanMarket,
   searchStocks,
   analyzeStock,
+  getCompanyInfo,
   DEFAULT_STOCKS
 } from './marketService.js';
 import { startPriceMonitor } from './priceMonitor.js';
@@ -106,6 +107,18 @@ app.get('/api/market/analyze/:symbol', async (req, res) => {
     res.json({ success: true, data: analysis, timestamp: Date.now() });
   } catch (error) {
     console.error('Analyze error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get company info (profile + news) from Finnhub
+app.get('/api/market/company/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const info = await getCompanyInfo(symbol.toUpperCase());
+    res.json({ success: true, data: info, timestamp: Date.now() });
+  } catch (error) {
+    console.error('Company info error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

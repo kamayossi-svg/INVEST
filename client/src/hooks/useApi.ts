@@ -173,3 +173,51 @@ export function useStockAnalysis() {
 
   return { analyze, loading, error };
 }
+
+export interface CompanyProfile {
+  name: string;
+  description: string | null;
+  sector: string | null;
+  industry: string | null;
+  marketCap: number | null;
+  country: string | null;
+  exchange: string | null;
+  ipo: string | null;
+  logo: string | null;
+  weburl: string | null;
+  ticker: string;
+}
+
+export interface CompanyNewsItem {
+  headline: string;
+  summary: string | null;
+  source: string;
+  url: string;
+  datetime: number;
+  image: string | null;
+}
+
+export interface CompanyInfo {
+  symbol: string;
+  profile: CompanyProfile | null;
+  news: CompanyNewsItem[];
+}
+
+export function useCompanyInfo() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchInfo = useCallback(async (symbol: string): Promise<CompanyInfo | null> => {
+    setLoading(true);
+    setError(null);
+    const result = await fetchApi<CompanyInfo>(`/market/company/${symbol}`);
+    setLoading(false);
+    if (result.success && result.data) {
+      return result.data;
+    }
+    setError(result.error || 'Failed to fetch company info');
+    return null;
+  }, []);
+
+  return { fetchInfo, loading, error };
+}

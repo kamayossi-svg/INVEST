@@ -1,5 +1,12 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import Alpaca from '@alpacahq/alpaca-trade-api';
+
+// Load .env from the server directory
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+dotenv.config({ path: join(__dirname, '.env') });
 
 // =====================
 // ALPACA CLIENT SETUP (S&P 500 stocks)
@@ -271,10 +278,14 @@ const SECTOR_MAP = {
 const quoteCache = new Map();
 const historicalCache = new Map();
 const analystCache = new Map();
+const companyProfileCache = new Map();
+const companyNewsCache = new Map();
 const QUOTE_CACHE_TTL_MARKET_OPEN = 60000;    // 60 seconds when market is open
 const QUOTE_CACHE_TTL_MARKET_CLOSED = Infinity; // Never expire when market is closed
 const HISTORICAL_CACHE_TTL = 300000; // 5 minutes for historical data
 const ANALYST_CACHE_TTL = 3600000;   // 1 hour for analyst data (changes infrequently)
+const COMPANY_PROFILE_CACHE_TTL = 86400000; // 24 hours for company profile (rarely changes)
+const COMPANY_NEWS_CACHE_TTL = 900000; // 15 minutes for news
 
 // Scan results cache for market-closed consistency
 let lastScanResults = null;
@@ -349,7 +360,7 @@ function getEasternTimeComponents() {
  * Check if US stock market is currently open
  * @returns {object} - { isOpen, isEarlyClose, reason, nextOpenTime }
  */
-function isMarketOpen() {
+export function isMarketOpen() {
   const et = getEasternTimeComponents();
   const currentMinutes = et.hours * 60 + et.minutes;
 
@@ -1244,6 +1255,132 @@ async function fetchAnalystRatings(symbol) {
   }
 }
 
+/**
+ * Fetch company profile from Finnhub
+ * Returns: name, description, sector, industry, market cap, etc.
+ */
+async function fetchCompanyProfile(symbol) {
+  const upperSymbol = symbol.toUpperCase();
+
+  // Check cache first
+  const cached = companyProfileCache.get(upperSymbol);
+  if (cached && Date.now() - cached.timestamp < COMPANY_PROFILE_CACHE_TTL) {
+    return cached.data;
+  }
+
+  try {
+    const response = await fetch(
+      `${FINNHUB_BASE_URL}/stock/profile2?symbol=${upperSymbol}&token=${FINNHUB_API_KEY}`
+    );
+
+    if (!response.ok) {
+      throw new Error(`Finnhub API error: ${response.status}`);
+    }
+
+    const profile = await response.json();
+
+    if (!profile || !profile.name) {
+      console.log(`[${upperSymbol}] No company profile available`);
+      return null;
+    }
+
+    const result = {
+      name: profile.name,
+      description: profile.description || null,
+      sector: profile.finnhubIndustry || null,
+      industry: profile.finnhubIndustry || null,
+      marketCap: profile.marketCapitalization || null, // In millions
+      country: profile.country || null,
+      exchange: profile.exchange || null,
+      ipo: profile.ipo || null,
+      logo: profile.logo || null,
+      weburl: profile.weburl || null,
+      ticker: profile.ticker || upperSymbol
+    };
+
+    // Cache the result
+    companyProfileCache.set(upperSymbol, { data: result, timestamp: Date.now() });
+    return result;
+
+  } catch (error) {
+    console.error(`[${upperSymbol}] Company profile error:`, error.message);
+    return null;
+  }
+}
+
+/**
+ * Fetch company news from Finnhub
+ * Returns: array of news items with headline, date, source, url
+ */
+async function fetchCompanyNews(symbol, limit = 3) {
+  const upperSymbol = symbol.toUpperCase();
+
+  // Check cache first
+  const cached = companyNewsCache.get(upperSymbol);
+  if (cached && Date.now() - cached.timestamp < COMPANY_NEWS_CACHE_TTL) {
+    return cached.data;
+  }
+
+  try {
+    // Get news from the last 7 days
+    const toDate = new Date().toISOString().split('T')[0];
+    const fromDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    const response = await fetch(
+      `${FINNHUB_BASE_URL}/company-news?symbol=${upperSymbol}&from=${fromDate}&to=${toDate}&token=${FINNHUB_API_KEY}`
+    );
+
+    if (!response.ok) {
+      throw new Error(`Finnhub API error: ${response.status}`);
+    }
+
+    const news = await response.json();
+
+    if (!Array.isArray(news) || news.length === 0) {
+      console.log(`[${upperSymbol}] No recent news available`);
+      return [];
+    }
+
+    // Take only the most recent items
+    const result = news.slice(0, limit).map(item => ({
+      headline: item.headline,
+      summary: item.summary || null,
+      source: item.source,
+      url: item.url,
+      datetime: item.datetime, // Unix timestamp
+      image: item.image || null
+    }));
+
+    // Cache the result
+    companyNewsCache.set(upperSymbol, { data: result, timestamp: Date.now() });
+    return result;
+
+  } catch (error) {
+    console.error(`[${upperSymbol}] Company news error:`, error.message);
+    return [];
+  }
+}
+
+/**
+ * Get combined company info (profile + news)
+ * Exported function for API use
+ */
+export async function getCompanyInfo(symbol) {
+  const upperSymbol = symbol.toUpperCase();
+
+  // Fetch profile and news in parallel
+  const [profile, news] = await Promise.all([
+    fetchCompanyProfile(upperSymbol),
+    fetchCompanyNews(upperSymbol, 3)
+  ]);
+
+  return {
+    symbol: upperSymbol,
+    profile,
+    news
+  };
+}
+
 // =====================
 // ALPACA DATA FETCHING
 // =====================
@@ -1980,9 +2117,11 @@ export async function analyzeStock(symbol) {
     // Determine trend
     const isUptrend = sma50 ? quote.price > sma50 : false;
 
-    // Check for stale data (quote older than 5 minutes)
+    // Check for stale data (quote older than 5 minutes) - only during market hours
+    // When market is closed, we expect data to be from the last trading session
     const STALE_THRESHOLD = 300000; // 5 minutes
-    const isStaleData = quote.stale || (Date.now() - quote.timestamp > STALE_THRESHOLD);
+    const marketCurrentlyOpen = isMarketOpen().isOpen;
+    const isStaleData = quote.stale || (marketCurrentlyOpen && (Date.now() - quote.timestamp > STALE_THRESHOLD));
 
     // ENHANCED Filter criteria with safety checks
     const trendFilter = isUptrend && !crossoverData.deathCross; // Must be uptrend AND not in death cross
