@@ -1,0 +1,20 @@
+{
+  "name": "smart-stock-trading-agent",
+  "version": "1.0.0",
+  "description": "Smart Stock Trading Agent with Paper Trading Simulator",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "install:all": "npm install && cd server && npm install && cd ../client && npm install",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev",
+    "build": "cd client && npm install && npm run build && cd ../server && npm install",
+    "start": "cd server && npm start",
+    "postinstall": "cd client && npm install && cd ../server && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

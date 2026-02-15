@@ -30,3 +30,15 @@ server/data.json
 # Temporary files
 *.tmp
 *.temp
+
+# Debug files
+debug_scan.json
+scan_result.json
+nul
+
+# Python files (if not needed)
+app.py
+requirements.txt
+
+# Claude config
+.claude/

@@ -1,5 +1,7 @@
 import express from 'express';
 import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import {
   getPortfolio,
@@ -28,11 +30,18 @@ import {
 } from './marketService.js';
 import { startPriceMonitor } from './priceMonitor.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+
+// Serve static files from the React app build directory in production
+const clientBuildPath = path.join(__dirname, '..', 'client', 'dist');
+app.use(express.static(clientBuildPath));
 
 // =====================
 // MARKET DATA ENDPOINTS
@@ -486,6 +495,15 @@ app.post('/api/alerts/read-all', (req, res) => {
 });
 
 // =====================
+// CATCH-ALL FOR SPA ROUTING
+// =====================
+
+// Serve React app for any non-API routes (must be after all API routes)
+app.get('*', (req, res) => {
+  res.sendFile(path.join(clientBuildPath, 'index.html'));
+});
+
+// =====================
 // START SERVER
 // =====================
 
@@ -494,6 +512,7 @@ app.listen(PORT, () => {
   console.log(`📈 Market Scanner API: http://localhost:${PORT}/api/market/scan`);
   console.log(`💼 Portfolio API: http://localhost:${PORT}/api/portfolio`);
   console.log(`🔔 Alerts API: http://localhost:${PORT}/api/alerts`);
+  console.log(`🌐 Static files served from: ${clientBuildPath}`);
 
   // Start the price monitoring service for auto TP/SL execution
   startPriceMonitor();
