@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react';
 import type { StockAnalysis } from '../types';
 import { useLanguage } from '../i18n';
 
-const API_BASE = 'http://localhost:3001/api';
+const API_BASE = '/api';
 
 interface OrderEditorProps {
   stock: StockAnalysis;
