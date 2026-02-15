@@ -45,7 +45,8 @@ const verdictStyles: Record<Verdict, { bg: string; text: string }> = {
 };
 
 // Get verdict label based on language
-function getVerdictLabel(verdict: Verdict, t: (key: string) => string): string {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getVerdictLabel(verdict: Verdict, t: (key: any) => string): string {
   switch (verdict) {
     case 'BUY_NOW': return t('verdictBuyNow');
     case 'WAIT_FOR_DIP':

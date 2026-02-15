@@ -26,12 +26,13 @@ function formatCurrency(value: number): string {
 export default function Header({
   totalEquity,
   cash,
-  unrealizedPL,
+  unrealizedPL: _unrealizedPL,
   alerts,
   onMarkAlertRead,
   onMarkAllAlertsRead,
   onRefreshAlerts
 }: HeaderProps) {
+  void _unrealizedPL; // Used in interface, suppress unused warning
   const { t, isRTL } = useLanguage();
   const initialEquity = 100000;
   const totalReturn = totalEquity - initialEquity;

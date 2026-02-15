@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import type { StockAnalysis } from '../types';
 import { useLanguage } from '../i18n';
 
@@ -136,7 +136,7 @@ function PriceSlider({
 }
 
 export default function OrderEditor({ stock, cash, onClose, onSuccess }: OrderEditorProps) {
-  const { t, isRTL } = useLanguage();
+  const { t } = useLanguage();
   const { battlePlan } = stock;
   const currentPrice = stock.price;
 

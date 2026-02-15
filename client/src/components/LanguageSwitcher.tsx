@@ -1,7 +1,7 @@
 import { useLanguage } from '../i18n';
 
 export default function LanguageSwitcher() {
-  const { language, setLanguage, t } = useLanguage();
+  const { language, setLanguage } = useLanguage();
 
   return (
     <div className="flex items-center gap-2">
