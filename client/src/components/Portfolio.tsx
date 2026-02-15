@@ -41,11 +41,11 @@ function HoldingCard({
   const isProfit = holding.unrealizedPL >= 0;
 
   return (
-    <div className="bg-gray-800 rounded-2xl p-5 border border-gray-700">
+    <div className="w-[95vw] md:w-auto mx-auto md:mx-0 bg-gray-800 rounded-2xl p-4 md:p-5 border border-gray-700">
       <div className="flex items-start justify-between mb-4">
         <div>
           <div className="flex items-center gap-2">
-            <h3 className="text-xl font-bold text-white">{holding.symbol}</h3>
+            <h3 className="text-lg md:text-xl font-bold text-white">{holding.symbol}</h3>
             <a
               href={`https://www.tradingview.com/chart/?symbol=${holding.symbol}`}
               target="_blank"
@@ -61,7 +61,7 @@ function HoldingCard({
           <p className="text-gray-400 text-sm">{holding.name || holding.symbol}</p>
         </div>
         <div className="text-right">
-          <p className="text-lg font-semibold text-white">{formatCurrency(holding.marketValue)}</p>
+          <p className="text-base md:text-lg font-semibold text-white">{formatCurrency(holding.marketValue)}</p>
           <p className="text-xs text-gray-500">{t('currentValue')}</p>
         </div>
       </div>
@@ -73,7 +73,7 @@ function HoldingCard({
             <p className="text-xs text-gray-400 mb-1">
               {isProfit ? t('makingMoney') : t('currentlyDown')}
             </p>
-            <p className={`text-2xl font-bold ${isProfit ? 'text-green-400' : 'text-red-400'}`}>
+            <p className={`text-xl md:text-2xl font-bold ${isProfit ? 'text-green-400' : 'text-red-400'}`}>
               {formatCurrency(holding.unrealizedPL)}
             </p>
           </div>
@@ -132,18 +132,18 @@ function HoldingCard({
         </div>
       )}
 
-      {/* Action Buttons */}
+      {/* Action Buttons - 44px min touch target */}
       <div className="flex gap-3">
         <button
           onClick={onAnalyze}
-          className="flex-1 py-3 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 font-medium rounded-xl transition-colors border border-blue-500/20 flex items-center justify-center gap-2"
+          className="flex-1 min-h-[44px] py-3 bg-blue-600/20 hover:bg-blue-600/30 active:bg-blue-600/40 text-blue-400 font-medium rounded-xl transition-colors border border-blue-500/20 flex items-center justify-center gap-2"
         >
           <span>🔬</span>
           {isRTL ? 'עדכן ניתוח' : 'Re-analyze'}
         </button>
         <button
           onClick={onSell}
-          className="flex-1 py-3 bg-red-600/20 hover:bg-red-600/30 text-red-400 font-medium rounded-xl transition-colors border border-red-500/20"
+          className="flex-1 min-h-[44px] py-3 bg-red-600/20 hover:bg-red-600/30 active:bg-red-600/40 text-red-400 font-medium rounded-xl transition-colors border border-red-500/20"
         >
           {t('sellShares')}
         </button>
@@ -192,11 +192,11 @@ export default function Portfolio({
   return (
     <div className="space-y-6">
       {/* Welcome Banner */}
-      <div className="bg-gradient-to-r from-purple-600/20 to-pink-600/20 rounded-2xl p-6 border border-purple-500/20">
-        <h2 className="text-2xl font-bold text-white mb-2">
+      <div className="bg-gradient-to-r from-purple-600/20 to-pink-600/20 rounded-2xl p-4 md:p-6 border border-purple-500/20">
+        <h2 className="text-xl md:text-2xl font-bold text-white mb-2">
           💼 {t('portfolioTitle')}
         </h2>
-        <p className="text-gray-300">
+        <p className="text-gray-300 text-sm md:text-base">
           {t('portfolioSubtitle')}
         </p>
       </div>
@@ -204,9 +204,9 @@ export default function Portfolio({
       {/* Main Stats */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Total Value Card */}
-        <div className="bg-gray-800 rounded-2xl p-6 border border-gray-700">
-          <p className="text-gray-400 text-sm mb-2">{t('totalPortfolioValue')}</p>
-          <p className="text-4xl font-bold text-white mb-2">{formatCurrency(data.totalEquity)}</p>
+        <div className="bg-gray-800 rounded-2xl p-4 md:p-6 border border-gray-700">
+          <p className="text-gray-400 text-xs md:text-sm mb-2">{t('totalPortfolioValue')}</p>
+          <p className="text-2xl md:text-4xl font-bold text-white mb-2">{formatCurrency(data.totalEquity)}</p>
           <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full ${isOverallProfit ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
             <span className="font-semibold">{formatCurrency(totalReturn)}</span>
             <span>({formatPercent(totalReturnPercent)})</span>
@@ -251,11 +251,11 @@ export default function Portfolio({
       {/* Actions */}
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold text-white">{t('yourHoldings')} ({data.holdings.length})</h2>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 md:gap-3">
           <button
             onClick={onRefresh}
             disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition-colors"
+            className="min-h-[44px] flex items-center gap-2 px-3 md:px-4 py-2 bg-gray-700 hover:bg-gray-600 active:bg-gray-500 text-white text-sm rounded-xl transition-colors active:scale-95"
           >
             <svg
               className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`}
@@ -270,20 +270,22 @@ export default function Portfolio({
                 d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
               />
             </svg>
-            {t('updatePrices')}
+            <span className="hidden sm:inline">{t('updatePrices')}</span>
+            <span className="sm:hidden">Refresh</span>
           </button>
           <button
             onClick={() => setShowResetConfirm(true)}
-            className="px-4 py-2 text-orange-400 hover:bg-orange-500/10 rounded-xl transition-colors"
+            className="min-h-[44px] px-3 md:px-4 py-2 text-orange-400 hover:bg-orange-500/10 active:bg-orange-500/20 rounded-xl transition-colors text-sm active:scale-95"
           >
-            {t('startOver')}
+            <span className="hidden sm:inline">{t('startOver')}</span>
+            <span className="sm:hidden">Reset</span>
           </button>
         </div>
       </div>
 
-      {/* Holdings Grid */}
+      {/* Holdings Grid - Full width cards on mobile */}
       {data.holdings.length > 0 ? (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="flex flex-col md:grid md:grid-cols-1 lg:grid-cols-2 gap-4 items-center md:items-stretch">
           {data.holdings.map((holding) => (
             <HoldingCard
               key={holding.symbol}

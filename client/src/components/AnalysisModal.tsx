@@ -237,6 +237,45 @@ function getCrossoverDisplay(crossoverData: any, _sma20?: number | null, _sma50?
   return displays[status] || displays['unknown'];
 }
 
+// Collapsible Section Component for mobile
+function CollapsibleSection({
+  title,
+  emoji,
+  children,
+  defaultOpen = true,
+}: {
+  title: string;
+  emoji: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
+  return (
+    <div className="space-y-3">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full flex items-center justify-between text-lg font-semibold text-white md:pointer-events-none"
+      >
+        <span className="flex items-center gap-2">
+          <span>{emoji}</span> {title}
+        </span>
+        <svg
+          className={`w-5 h-5 text-gray-400 transition-transform md:hidden ${isOpen ? 'rotate-180' : ''}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      <div className={`space-y-4 ${isOpen ? 'block' : 'hidden md:block'}`}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export default function AnalysisModal({ symbol, onClose }: AnalysisModalProps) {
   const { analyze, loading, error } = useStockAnalysis();
   const { fetchInfo: fetchCompanyInfo, loading: companyLoading } = useCompanyInfo();
@@ -276,20 +315,20 @@ export default function AnalysisModal({ symbol, onClose }: AnalysisModalProps) {
   const volatilityData = analysis ? (analysis as any).volatilityData || {} : {};
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" dir="rtl">
-      <div className="bg-gray-800 rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto shadow-2xl">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-end md:items-center justify-center z-50 md:p-4" dir="rtl">
+      <div className="bg-gray-800 rounded-t-2xl md:rounded-2xl w-full max-w-3xl max-h-[95vh] md:max-h-[90vh] overflow-y-auto shadow-2xl">
         {/* Header */}
-        <div className="sticky top-0 bg-gray-800 border-b border-gray-700 p-4 flex items-center justify-between z-10">
-          <div className="flex items-center gap-3">
-            <span className="text-2xl">🔬</span>
+        <div className="sticky top-0 bg-gray-800 border-b border-gray-700 p-3 md:p-4 flex items-center justify-between z-10">
+          <div className="flex items-center gap-2 md:gap-3">
+            <span className="text-xl md:text-2xl">🔬</span>
             <div>
-              <h2 className="text-xl font-bold text-white">{symbol}</h2>
-              <p className="text-sm text-gray-400">ניתוח טכני מפורט</p>
+              <h2 className="text-lg md:text-xl font-bold text-white">{symbol}</h2>
+              <p className="text-xs md:text-sm text-gray-400">ניתוח טכני מפורט</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
+            className="min-h-[44px] min-w-[44px] p-2 hover:bg-gray-700 active:bg-gray-600 rounded-lg transition-colors flex items-center justify-center"
           >
             <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -298,7 +337,7 @@ export default function AnalysisModal({ symbol, onClose }: AnalysisModalProps) {
         </div>
 
         {/* Content */}
-        <div className="p-6">
+        <div className="p-4 md:p-6">
           {loading && (
             <div className="flex flex-col items-center justify-center py-12">
               <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-4" />
@@ -430,7 +469,7 @@ export default function AnalysisModal({ symbol, onClose }: AnalysisModalProps) {
               })()}
 
               {/* Trading Plan */}
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4">
                 {/* Entry Zone */}
                 <div className="bg-gray-900 rounded-xl p-4 border border-gray-700">
                   <p className="text-gray-400 text-xs mb-2 flex items-center gap-1">
@@ -461,11 +500,12 @@ export default function AnalysisModal({ symbol, onClose }: AnalysisModalProps) {
                 </div>
               </div>
 
-              {/* Educational Technical Indicators */}
-              <div className="space-y-4">
-                <h3 className="text-lg font-semibold text-white flex items-center gap-2">
-                  <span>📊</span> אינדיקטורים טכניים
-                </h3>
+              {/* Educational Technical Indicators - Collapsed by default on mobile */}
+              <CollapsibleSection
+                title="אינדיקטורים טכניים"
+                emoji="📊"
+                defaultOpen={false}
+              >
 
                 {/* Golden/Death Cross */}
                 <div className="bg-gray-900 rounded-xl p-4 border border-gray-700">
@@ -629,7 +669,7 @@ export default function AnalysisModal({ symbol, onClose }: AnalysisModalProps) {
                     {educationalTexts.riskReward(analysis.battlePlan.riskReward.ratio)}
                   </p>
                 </div>
-              </div>
+              </CollapsibleSection>
 
               {/* Analyst Data */}
               {analysis.analystData && analysis.analystData.total > 0 && (
@@ -696,10 +736,10 @@ export default function AnalysisModal({ symbol, onClose }: AnalysisModalProps) {
         </div>
 
         {/* Footer */}
-        <div className="sticky bottom-0 bg-gray-800 border-t border-gray-700 p-4">
+        <div className="sticky bottom-0 bg-gray-800 border-t border-gray-700 p-3 md:p-4 safe-area-bottom">
           <button
             onClick={onClose}
-            className="w-full py-3 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-xl transition-colors"
+            className="w-full min-h-[44px] py-3 bg-gray-700 hover:bg-gray-600 active:bg-gray-500 text-white font-medium rounded-xl transition-colors active:scale-[0.98]"
           >
             סגור
           </button>

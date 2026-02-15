@@ -43,3 +43,65 @@ body {
 .animate-pulse-red {
   animation: pulse-red 2s ease-in-out infinite;
 }
+
+/* Mobile-specific styles for native app feel */
+
+/* iOS Safe Area Support */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 8px);
+}
+
+.safe-area-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* Touch feedback for mobile */
+@media (hover: none) and (pointer: coarse) {
+  button:active {
+    transform: scale(0.97);
+  }
+
+  /* Prevent text selection on touch */
+  button, a {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    user-select: none;
+  }
+}
+
+/* Smooth scrolling for mobile */
+@media (max-width: 768px) {
+  html {
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Prevent horizontal overflow */
+  body {
+    overflow-x: hidden;
+  }
+
+  /* Mobile card animations */
+  .mobile-card-enter {
+    animation: slideUp 0.3s ease-out;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Bottom navigation blur effect */
+@supports (backdrop-filter: blur(12px)) {
+  .backdrop-blur-lg {
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+}

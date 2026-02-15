@@ -56,6 +56,150 @@ function getVerdictLabel(verdict: Verdict, t: (key: string) => string): string {
 }
 
 // ==========================================
+// INFO TOOLTIP COMPONENT
+// ==========================================
+function InfoTooltip({ text }: { text: string }) {
+  const [show, setShow] = useState(false);
+
+  return (
+    <span className="relative inline-block">
+      <span
+        className="cursor-help text-gray-500 hover:text-blue-400 transition-colors mr-1"
+        onMouseEnter={() => setShow(true)}
+        onMouseLeave={() => setShow(false)}
+        onClick={() => setShow(!show)}
+      >
+        ℹ️
+      </span>
+      {show && (
+        <div className="absolute z-50 bottom-full right-0 mb-2 w-72 p-3 bg-gray-900 border border-gray-600 rounded-lg shadow-xl text-xs text-gray-300 leading-relaxed">
+          {text}
+          <div className="absolute top-full right-4 border-8 border-transparent border-t-gray-900" />
+        </div>
+      )}
+    </span>
+  );
+}
+
+// ==========================================
+// HEBREW EDUCATIONAL TEXTS
+// ==========================================
+const educationalTexts = {
+  rsi: (value: number | null) => {
+    if (value === null) return 'אין מספיק נתונים לחישוב RSI';
+    if (value >= 70) return `RSI של ${value.toFixed(1)} מעיד על קניית יתר - המניה עלתה מהר מדי ויש סיכוי לתיקון מחיר כלפי מטה. משקיעים זהירים ממתינים לירידה.`;
+    if (value >= 50) return `RSI של ${value.toFixed(1)} מראה מומנטום חיובי - יותר קונים מאשר מוכרים. זה טווח בריא לכניסה.`;
+    if (value >= 30) return `RSI של ${value.toFixed(1)} מראה מומנטום מעורב - המניה לא בטרנד ברור. כדאי לחכות לאות ברור יותר.`;
+    return `RSI של ${value.toFixed(1)} מעיד על מכירת יתר - המניה ירדה מהר מדי ויש סיכוי לעלייה. אבל זהירות - לפעמים מכירת יתר נמשכת.`;
+  },
+  crossover: (goldenCross: boolean, deathCross: boolean, trendStrength?: number) => {
+    if (goldenCross) {
+      const strength = trendStrength ? ` (עוצמה: ${trendStrength.toFixed(2)}%)` : '';
+      return `צלב זהב ✨ - הממוצע הקצר (SMA20) חצה מעל הממוצע הארוך (SMA50)${strength}. זהו אות קנייה קלאסי המעיד על תחילת מגמת עלייה. המגמה חזקה יותר ככל שהפער בין הממוצעים גדול יותר.`;
+    }
+    if (deathCross) {
+      return `צלב מוות ☠️ - הממוצע הקצר (SMA20) חצה מתחת לממוצע הארוך (SMA50). זהו אות מכירה המעיד על תחילת מגמת ירידה. מומלץ להימנע מקנייה או לשקול מכירה.`;
+    }
+    return `מצב ניטרלי - אין חציית ממוצעים משמעותית. הממוצעים קרובים זה לזה, מה שמעיד על חוסר כיוון ברור בשוק.`;
+  },
+  volume: (volumeRatio: number) => {
+    if (!volumeRatio) return 'אין נתוני נפח זמינים';
+    const pct = Math.round((volumeRatio - 1) * 100);
+    if (volumeRatio >= 2) return `נפח מסחר גבוה מאוד (${pct}% מעל הממוצע) - עניין רב מצד משקיעים. נפח גבוה מאשר תנועות מחיר ומעיד על אמינות הטרנד.`;
+    if (volumeRatio >= 1.5) return `נפח מסחר גבוה (${pct}% מעל הממוצע) - יש עניין מוגבר במניה. זה סימן חיובי כשהמחיר עולה.`;
+    if (volumeRatio >= 0.9) return `נפח מסחר רגיל - אין שינוי משמעותי בפעילות המסחר.`;
+    return `נפח מסחר נמוך (${Math.abs(pct)}% מתחת לממוצע) - פחות משקיעים פעילים. תנועות מחיר בנפח נמוך פחות אמינות.`;
+  },
+  fallingKnife: (days: number) => {
+    if (days >= 5) return `סכין נופלת 🔪 - המניה ירדה ${days} ימים ברציפות! מסוכן מאוד לקנות כשמניה בנפילה חופשית. המתן לסימני התייצבות.`;
+    if (days >= 3) return `ירידות רצופות (${days} ימים) - המניה בלחץ מכירות. לא הזמן האידיאלי לכניסה, אבל עוד לא בטריטוריה מסוכנת.`;
+    return `המניה לא בירידה רצופה משמעותית - אין סימן של "סכין נופלת".`;
+  },
+  volatility: (level: string) => {
+    const levels: Record<string, string> = {
+      'extreme': `תנודתיות קיצונית ⚡ - המניה זזה בחדות. יש להגדיל סטופ לוס ולהקטין גודל פוזיציה. מתאים למשקיעים מנוסים בלבד.`,
+      'high': `תנודתיות גבוהה - המניה נעה יותר מהממוצע. מומלץ להיות זהיר עם גודל הפוזיציה.`,
+      'elevated': `תנודתיות מוגברת - יש לקחת בחשבון תנודות גדולות יותר מהרגיל.`,
+      'normal': `תנודתיות רגילה - המניה נעה בטווח צפוי.`,
+      'low': `תנודתיות נמוכה - המניה יציבה יחסית. מתאים למשקיעים שמרניים.`
+    };
+    return levels[level] || `רמת תנודתיות: ${level}`;
+  },
+  analysts: (total: number, consensus: string) => {
+    const consensusHeb: Record<string, string> = {
+      'Strong Buy': 'קנייה חזקה',
+      'Buy': 'קנייה',
+      'Hold': 'החזק',
+      'Sell': 'מכירה',
+      'Strong Sell': 'מכירה חזקה'
+    };
+    const heb = consensusHeb[consensus] || consensus;
+    return `${total} אנליסטים מוול סטריט עוקבים אחרי המניה. הקונצנזוס: ${heb}. דירוג האנליסטים משקף את הציפיות של מומחים מקצועיים לגבי ביצועי המניה.`;
+  }
+};
+
+// Generate Hebrew reasoning
+function generateHebrewReasoning(stock: StockAnalysis): string {
+  const parts: string[] = [];
+  const { battlePlan, rsi, volumeRatio, analystData } = stock;
+  const safetyData = battlePlan.safetyData || {};
+
+  // Verdict intro
+  const verdictIntros: Record<string, string> = {
+    'BUY_NOW': '🟢 המניה מציגה הזדמנות קנייה מצוינת.',
+    'WAIT_FOR_DIP': '🟡 המניה מעניינת אך כדאי לחכות לירידה.',
+    'WATCH': '🟡 המניה במעקב - עדיין לא מציגה סיגנל ברור.',
+    'AVOID': '🔴 מומלץ להימנע מהמניה כרגע.'
+  };
+  parts.push(verdictIntros[battlePlan.verdict] || '');
+
+  // Golden Cross / Death Cross
+  if (safetyData.goldenCross) {
+    parts.push(`צלב זהב פעיל ✨ - SMA20 מעל SMA50 בפער של ${safetyData.trendStrength?.toFixed(2) || '?'}%, אות חיובי למגמת עלייה.`);
+  } else if (safetyData.deathCross) {
+    parts.push(`צלב מוות פעיל ☠️ - מגמה שלילית.`);
+  }
+
+  // RSI Analysis
+  if (rsi !== null && rsi !== undefined) {
+    if (rsi >= 70) {
+      parts.push(`RSI של ${rsi.toFixed(1)} מעיד על קניית יתר - יש סיכון לתיקון מחיר.`);
+    } else if (rsi >= 50) {
+      parts.push(`RSI של ${rsi.toFixed(1)} מראה מומנטום חיובי בריא.`);
+    } else if (rsi >= 30) {
+      parts.push(`RSI של ${rsi.toFixed(1)} מראה מומנטום מעורב.`);
+    } else {
+      parts.push(`RSI של ${rsi.toFixed(1)} מעיד על מכירת יתר - אפשרות להתאוששות.`);
+    }
+  }
+
+  // Volume
+  if (volumeRatio && volumeRatio > 1.3) {
+    parts.push(`נפח מסחר גבוה (${Math.round((volumeRatio - 1) * 100)}% מעל הממוצע) מחזק את האות.`);
+  }
+
+  // Safety warnings
+  if (safetyData.isFallingKnife) {
+    parts.push(`⚠️ זהירות: סכין נופלת - ${safetyData.consecutiveDownDays} ימי ירידה ברציפות.`);
+  }
+  if (safetyData.volatilityLevel === 'extreme' || safetyData.volatilityLevel === 'high') {
+    parts.push(`⚠️ תנודתיות ${safetyData.volatilityLevel === 'extreme' ? 'קיצונית' : 'גבוהה'} - מומלץ להקטין גודל פוזיציה.`);
+  }
+
+  // Analyst consensus
+  if (analystData && analystData.total >= 10) {
+    const buyPct = Math.round(((analystData.strongBuy + analystData.buy) / analystData.total) * 100);
+    if (buyPct >= 70) {
+      parts.push(`${analystData.total} אנליסטים עם ${buyPct}% המלצות קנייה - תמיכה חזקה מוול סטריט.`);
+    } else if (buyPct >= 50) {
+      parts.push(`${buyPct}% מתוך ${analystData.total} אנליסטים ממליצים לקנות.`);
+    }
+  }
+
+  return parts.join(' ');
+}
+
+// ==========================================
 // EXPANDED ROW DETAIL COMPONENT
 // ==========================================
 function ExpandedRowDetail({ stock, isRTL }: { stock: StockAnalysis; isRTL: boolean }) {
@@ -81,27 +225,112 @@ function ExpandedRowDetail({ stock, isRTL }: { stock: StockAnalysis; isRTL: bool
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      {/* Mobile: Vertical Price Ladder */}
+      <div className="block md:hidden mb-6">
+        <div className="bg-gray-800/50 rounded-xl p-4 border border-gray-700/50">
+          <h4 className="text-sm font-semibold text-gray-300 mb-4 flex items-center gap-2">
+            <span>📊</span> {isRTL ? 'תוכנית מחיר' : 'Price Plan'}
+          </h4>
+          {/* Vertical Price Bar */}
+          <div className="flex items-stretch gap-4">
+            {/* Vertical Progress Bar */}
+            <div className="relative w-3 bg-gray-700 rounded-full flex flex-col-reverse">
+              {/* Stop Loss Zone (Red) */}
+              <div className="h-1/3 bg-gradient-to-t from-red-600 to-red-500 rounded-b-full" />
+              {/* Entry Zone (Blue) */}
+              <div className="h-1/3 bg-gradient-to-t from-blue-600 to-blue-500" />
+              {/* Take Profit Zone (Green) */}
+              <div className="h-1/3 bg-gradient-to-t from-green-600 to-green-500 rounded-t-full" />
+              {/* Current Price Marker */}
+              <div className="absolute left-1/2 -translate-x-1/2 w-5 h-1 bg-white rounded-full shadow-lg" style={{ bottom: '50%' }} />
+            </div>
+            {/* Price Labels */}
+            <div className="flex flex-col justify-between flex-1 py-1">
+              <div className="flex items-center justify-between p-2 bg-green-500/10 rounded-lg border border-green-500/20">
+                <span className="text-green-400 text-xs font-medium flex items-center gap-1">
+                  <span>🎯</span> {isRTL ? 'יעד רווח' : 'Take Profit'}
+                </span>
+                <span className="text-green-400 font-bold text-sm">
+                  {formatCurrency(battlePlan.profitTarget.price)}
+                  <span className="text-green-500/70 text-xs ml-1">+{battlePlan.profitTarget.percentage.toFixed(1)}%</span>
+                </span>
+              </div>
+              <div className="flex items-center justify-between p-2 bg-blue-500/10 rounded-lg border border-blue-500/20 my-2">
+                <span className="text-blue-400 text-xs font-medium flex items-center gap-1">
+                  <span>📍</span> {isRTL ? 'מחיר נוכחי' : 'Current'}
+                </span>
+                <span className="text-blue-400 font-bold text-sm">{formatCurrency(stock.price)}</span>
+              </div>
+              <div className="flex items-center justify-between p-2 bg-red-500/10 rounded-lg border border-red-500/20">
+                <span className="text-red-400 text-xs font-medium flex items-center gap-1">
+                  <span>🛑</span> {isRTL ? 'סטופ לוס' : 'Stop Loss'}
+                </span>
+                <span className="text-red-400 font-bold text-sm">
+                  {formatCurrency(battlePlan.stopLoss.price)}
+                  <span className="text-red-500/70 text-xs ml-1">-{battlePlan.stopLoss.percentage.toFixed(1)}%</span>
+                </span>
+              </div>
+            </div>
+          </div>
+          {/* Risk/Reward Badge */}
+          <div className="mt-4 flex items-center justify-center gap-2 p-2 bg-purple-500/10 rounded-lg border border-purple-500/20">
+            <span className="text-purple-400 text-xs">{isRTL ? 'יחס סיכון/סיכוי' : 'Risk/Reward'}</span>
+            <span className="text-purple-400 font-bold">1:{battlePlan.riskReward.ratio}</span>
+          </div>
+          {/* Mobile Trade Summary */}
+          <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
+            <div className="p-2 bg-gray-900/50 rounded-lg">
+              <span className="text-gray-500 block">{isRTL ? 'גודל פוזיציה' : 'Position Size'}</span>
+              <span className="text-purple-400 font-medium">{battlePlan.suggestedPosition?.shares || 'N/A'} {isRTL ? 'מניות' : 'shares'}</span>
+            </div>
+            <div className="p-2 bg-gray-900/50 rounded-lg">
+              <span className="text-gray-500 block">{isRTL ? 'אזור כניסה' : 'Entry Zone'}</span>
+              <span className="text-blue-400 font-medium">{formatCurrency(battlePlan.entryZone?.low || stock.price * 0.99)}</span>
+            </div>
+            <div className="p-2 bg-gray-900/50 rounded-lg">
+              <span className="text-gray-500 block">{isRTL ? 'רווח מקסימלי' : 'Max Profit'}</span>
+              <span className="text-green-400 font-medium">{battlePlan.suggestedPosition?.maxProfit ? formatCurrency(battlePlan.suggestedPosition.maxProfit) : 'N/A'}</span>
+            </div>
+            <div className="p-2 bg-gray-900/50 rounded-lg">
+              <span className="text-gray-500 block">{isRTL ? 'סיכון מקסימלי' : 'Max Risk'}</span>
+              <span className="text-red-400 font-medium">{battlePlan.suggestedPosition?.maxRisk ? formatCurrency(battlePlan.suggestedPosition.maxRisk) : 'N/A'}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Desktop/Tablet: 4-column grid, Mobile: stacked */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
 
         {/* Technical Indicators */}
         <div className="bg-gray-800/50 rounded-xl p-4 border border-gray-700/50">
           <h4 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
             <span>📊</span> {isRTL ? 'אינדיקטורים טכניים' : 'Technical Indicators'}
           </h4>
-          <div className="space-y-2 text-sm">
+          <div className="space-y-3 text-sm">
             {/* Golden Cross / Death Cross */}
-            <div className="flex items-center justify-between">
-              <span className="text-gray-400">{isRTL ? 'צלב SMA' : 'SMA Cross'}</span>
-              {safetyData.goldenCross ? (
-                <span className="text-green-400 font-medium flex items-center gap-1">
-                  <span>✨</span> {isRTL ? 'צלב זהב' : 'Golden Cross'}
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="text-gray-400 flex items-center gap-1">
+                  {isRTL && <InfoTooltip text={educationalTexts.crossover(!!safetyData.goldenCross, !!safetyData.deathCross, safetyData.trendStrength)} />}
+                  {isRTL ? 'צלב SMA' : 'SMA Cross'}
                 </span>
-              ) : safetyData.deathCross ? (
-                <span className="text-red-400 font-medium flex items-center gap-1">
-                  <span>☠️</span> {isRTL ? 'צלב מוות' : 'Death Cross'}
-                </span>
-              ) : (
-                <span className="text-gray-500">{isRTL ? 'ניטרלי' : 'Neutral'}</span>
+                {safetyData.goldenCross ? (
+                  <span className="text-green-400 font-medium flex items-center gap-1">
+                    <span>✨</span> {isRTL ? 'צלב זהב' : 'Golden Cross'}
+                  </span>
+                ) : safetyData.deathCross ? (
+                  <span className="text-red-400 font-medium flex items-center gap-1">
+                    <span>☠️</span> {isRTL ? 'צלב מוות' : 'Death Cross'}
+                  </span>
+                ) : (
+                  <span className="text-gray-500">{isRTL ? 'ניטרלי' : 'Neutral'}</span>
+                )}
+              </div>
+              {isRTL && (
+                <p className="text-gray-500 text-xs mt-1 leading-relaxed">
+                  {educationalTexts.crossover(!!safetyData.goldenCross, !!safetyData.deathCross, safetyData.trendStrength)}
+                </p>
               )}
             </div>
 
@@ -116,41 +345,68 @@ function ExpandedRowDetail({ stock, isRTL }: { stock: StockAnalysis; isRTL: bool
             )}
 
             {/* Falling Knife */}
-            <div className="flex items-center justify-between">
-              <span className="text-gray-400">{isRTL ? 'סכין נופלת' : 'Falling Knife'}</span>
-              {safetyData.isFallingKnife ? (
-                <span className="text-red-400 font-medium flex items-center gap-1">
-                  <span>🔪</span> {isRTL ? 'כן' : 'Yes'} ({safetyData.consecutiveDownDays} {isRTL ? 'ימים' : 'days'})
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="text-gray-400 flex items-center gap-1">
+                  {isRTL && <InfoTooltip text={educationalTexts.fallingKnife(safetyData.consecutiveDownDays || 0)} />}
+                  {isRTL ? 'סכין נופלת' : 'Falling Knife'}
                 </span>
-              ) : (
-                <span className="text-green-400">{isRTL ? 'לא' : 'No'}</span>
-              )}
+                {safetyData.isFallingKnife ? (
+                  <span className="text-red-400 font-medium flex items-center gap-1">
+                    <span>🔪</span> {isRTL ? 'כן' : 'Yes'} ({safetyData.consecutiveDownDays} {isRTL ? 'ימים' : 'days'})
+                  </span>
+                ) : (
+                  <span className="text-green-400">{isRTL ? 'לא' : 'No'}</span>
+                )}
+              </div>
             </div>
 
             {/* Volatility */}
-            <div className="flex items-center justify-between">
-              <span className="text-gray-400">{isRTL ? 'תנודתיות' : 'Volatility'}</span>
-              <span className={`font-medium ${
-                safetyData.volatilityLevel === 'extreme' || safetyData.volatilityLevel === 'high'
-                  ? 'text-red-400'
-                  : safetyData.volatilityLevel === 'elevated'
-                    ? 'text-yellow-400'
-                    : 'text-green-400'
-              }`}>
-                {safetyData.volatilityLevel || 'N/A'}
-              </span>
+            {/* Volatility */}
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="text-gray-400 flex items-center gap-1">
+                  {isRTL && <InfoTooltip text={educationalTexts.volatility(safetyData.volatilityLevel || 'normal')} />}
+                  {isRTL ? 'תנודתיות' : 'Volatility'}
+                </span>
+                <span className={`font-medium ${
+                  safetyData.volatilityLevel === 'extreme' || safetyData.volatilityLevel === 'high'
+                    ? 'text-red-400'
+                    : safetyData.volatilityLevel === 'elevated'
+                      ? 'text-yellow-400'
+                      : 'text-green-400'
+                }`}>
+                  {isRTL ? ({
+                    'extreme': 'קיצונית ⚡',
+                    'high': 'גבוהה',
+                    'elevated': 'מוגברת',
+                    'normal': 'רגילה',
+                    'low': 'נמוכה'
+                  } as Record<string, string>)[safetyData.volatilityLevel || 'normal'] || safetyData.volatilityLevel : safetyData.volatilityLevel || 'N/A'}
+                </span>
+              </div>
             </div>
 
             {/* RSI */}
-            <div className="flex items-center justify-between">
-              <span className="text-gray-400">RSI</span>
-              <span className={`font-medium ${
-                stock.rsi && stock.rsi >= 70 ? 'text-red-400' :
-                stock.rsi && stock.rsi >= 50 ? 'text-green-400' :
-                stock.rsi && stock.rsi >= 30 ? 'text-yellow-400' : 'text-blue-400'
-              }`}>
-                {stock.rsi || 'N/A'}
-              </span>
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="text-gray-400 flex items-center gap-1">
+                  {isRTL && <InfoTooltip text={educationalTexts.rsi(stock.rsi)} />}
+                  RSI
+                </span>
+                <span className={`font-medium ${
+                  stock.rsi && stock.rsi >= 70 ? 'text-red-400' :
+                  stock.rsi && stock.rsi >= 50 ? 'text-green-400' :
+                  stock.rsi && stock.rsi >= 30 ? 'text-yellow-400' : 'text-blue-400'
+                }`}>
+                  {stock.rsi?.toFixed(1) || 'N/A'}
+                </span>
+              </div>
+              {isRTL && stock.rsi && (
+                <p className="text-gray-500 text-xs mt-1 leading-relaxed">
+                  {educationalTexts.rsi(stock.rsi)}
+                </p>
+              )}
             </div>
 
             {/* SMA Values */}
@@ -306,12 +562,12 @@ function ExpandedRowDetail({ stock, isRTL }: { stock: StockAnalysis; isRTL: bool
           <h4 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
             <span>🤖</span> {isRTL ? 'נימוק ההמלצה' : 'Recommendation Reasoning'}
           </h4>
-          <p className="text-gray-300 text-sm leading-relaxed mb-4">
-            {battlePlan.reasoning}
+          <p className="text-gray-300 text-sm leading-relaxed mb-4" dir={isRTL ? 'rtl' : 'ltr'}>
+            {isRTL ? generateHebrewReasoning(stock) : battlePlan.reasoning}
           </p>
 
-          {/* Why Factors */}
-          {battlePlan.whyFactors && battlePlan.whyFactors.length > 0 && (
+          {/* Why Factors - Only show in English mode */}
+          {!isRTL && battlePlan.whyFactors && battlePlan.whyFactors.length > 0 && (
             <div className="pt-3 border-t border-gray-700/50">
               <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">
                 {isRTL ? 'גורמי החלטה' : 'Decision Factors'}
@@ -326,8 +582,8 @@ function ExpandedRowDetail({ stock, isRTL }: { stock: StockAnalysis; isRTL: bool
             </div>
           )}
 
-          {/* Battle Plan Summary */}
-          <div className="mt-4 pt-3 border-t border-gray-700/50">
+          {/* Battle Plan Summary - Hidden on mobile (shown in vertical layout above) */}
+          <div className="mt-4 pt-3 border-t border-gray-700/50 hidden md:block">
             <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">
               {isRTL ? 'תוכנית מסחר' : 'Trade Plan'}
             </p>
@@ -465,10 +721,10 @@ export default function Scanner({
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+          <h1 className="text-xl md:text-2xl font-bold text-white flex items-center gap-2 md:gap-3">
             <span>🎯</span> {t('scannerTitle')}
           </h1>
-          <p className="text-gray-400 mt-1">
+          <p className="text-gray-400 mt-1 text-sm md:text-base">
             {t('scannerSubtitle')}
           </p>
         </div>
@@ -497,16 +753,16 @@ export default function Scanner({
             </div>
           )}
 
-          <div className="text-sm text-gray-400">
+          <div className="text-xs md:text-sm text-gray-400">
             {t('cashLabel')}: <span className="text-green-400 font-semibold">{formatCurrency(cash)}</span>
           </div>
           <button
             onClick={onRefresh}
             disabled={loading}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl font-medium transition-all ${
+            className={`min-h-[44px] flex items-center gap-2 px-3 md:px-4 py-2 rounded-xl font-medium text-sm transition-all active:scale-95 ${
               loading
                 ? 'bg-blue-900/50 text-blue-300 cursor-not-allowed'
-                : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/25'
+                : 'bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white shadow-lg shadow-blue-500/25'
             }`}
           >
             <svg
@@ -538,24 +794,24 @@ export default function Scanner({
         </div>
       )}
 
-      {/* Filter Tabs */}
+      {/* Filter Tabs - 44px min touch target on mobile */}
       <div className="flex flex-wrap gap-2">
         <button
           onClick={() => setFilter('all')}
-          className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+          className={`min-h-[44px] px-4 py-2 rounded-xl text-sm font-medium transition-all active:scale-95 ${
             filter === 'all'
               ? 'bg-white text-gray-900 shadow-lg'
-              : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+              : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white active:bg-gray-600'
           }`}
         >
           {t('filterAll')} ({displayData.length})
         </button>
         <button
           onClick={() => setFilter('buy_now')}
-          className={`px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 ${
+          className={`min-h-[44px] px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 active:scale-95 ${
             filter === 'buy_now'
               ? 'bg-green-500 text-white shadow-lg shadow-green-500/25'
-              : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+              : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white active:bg-gray-600'
           }`}
         >
           <span className="w-2 h-2 rounded-full bg-green-400" />
@@ -563,10 +819,10 @@ export default function Scanner({
         </button>
         <button
           onClick={() => setFilter('watch')}
-          className={`px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 ${
+          className={`min-h-[44px] px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 active:scale-95 ${
             filter === 'watch'
               ? 'bg-yellow-500 text-white shadow-lg shadow-yellow-500/25'
-              : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+              : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white active:bg-gray-600'
           }`}
         >
           <span className="w-2 h-2 rounded-full bg-yellow-400" />
@@ -574,10 +830,10 @@ export default function Scanner({
         </button>
         <button
           onClick={() => setFilter('avoid')}
-          className={`px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 ${
+          className={`min-h-[44px] px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 active:scale-95 ${
             filter === 'avoid'
               ? 'bg-red-500 text-white shadow-lg shadow-red-500/25'
-              : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+              : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white active:bg-gray-600'
           }`}
         >
           <span className="w-2 h-2 rounded-full bg-red-400" />
@@ -711,9 +967,9 @@ export default function Scanner({
                             </td>
 
                             {/* Symbol */}
-                            <td className="px-4 py-3">
+                            <td className="px-3 md:px-4 py-3">
                               <div className="flex items-center gap-2">
-                                <span className="font-bold text-white text-lg">{stock.symbol}</span>
+                                <span className="font-bold text-white text-base md:text-lg">{stock.symbol}</span>
                                 {isOwned && (
                                   <span className="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 text-xs font-medium rounded border border-purple-500/30">
                                     💼
@@ -814,20 +1070,20 @@ export default function Scanner({
                               </span>
                             </td>
 
-                            {/* Action Button */}
+                            {/* Action Button - 44px min touch target */}
                             <td className="px-4 py-3">
                               {battlePlan.verdict === 'BUY_NOW' ? (
                                 <button
                                   onClick={(e) => handleTradePlan(stock, e)}
                                   disabled={loading}
-                                  className="px-4 py-2 rounded-lg font-semibold text-sm bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white shadow-lg shadow-green-500/25 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  className="min-h-[44px] px-4 py-2 rounded-lg font-semibold text-sm bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 active:from-green-700 active:to-emerald-700 text-white shadow-lg shadow-green-500/25 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   {isRTL ? 'קנה' : 'Buy'}
                                 </button>
                               ) : battlePlan.verdict === 'AVOID' ? (
                                 <button
                                   disabled
-                                  className="px-4 py-2 rounded-lg font-semibold text-sm bg-gray-700 text-gray-500 cursor-not-allowed"
+                                  className="min-h-[44px] px-4 py-2 rounded-lg font-semibold text-sm bg-gray-700 text-gray-500 cursor-not-allowed"
                                 >
                                   {isRTL ? 'הימנע' : 'Avoid'}
                                 </button>
@@ -835,7 +1091,7 @@ export default function Scanner({
                                 <button
                                   onClick={(e) => handleTradePlan(stock, e)}
                                   disabled={loading}
-                                  className="px-4 py-2 rounded-lg font-semibold text-sm bg-gradient-to-r from-yellow-600 to-orange-600 hover:from-yellow-500 hover:to-orange-500 text-white shadow-lg shadow-yellow-500/25 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  className="min-h-[44px] px-4 py-2 rounded-lg font-semibold text-sm bg-gradient-to-r from-yellow-600 to-orange-600 hover:from-yellow-500 hover:to-orange-500 active:from-yellow-700 active:to-orange-700 text-white shadow-lg shadow-yellow-500/25 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   {isRTL ? 'צפה' : 'View'}
                                 </button>
