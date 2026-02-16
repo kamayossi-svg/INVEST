@@ -32,15 +32,15 @@ console.log('📊 Finnhub API configured for analyst ratings');
 
 // S&P 500 Complete Stock List (503 stocks as of 2024)
 export const DEFAULT_STOCKS = [
-  // Information Technology (71 stocks)
+  // Information Technology (77 stocks)
   'AAPL', 'MSFT', 'NVDA', 'AVGO', 'ORCL', 'CRM', 'CSCO', 'ACN', 'ADBE', 'IBM',
   'INTC', 'AMD', 'QCOM', 'TXN', 'NOW', 'INTU', 'AMAT', 'ADI', 'LRCX', 'MU',
   'KLAC', 'SNPS', 'CDNS', 'MCHP', 'FTNT', 'MSI', 'ANSS', 'NXPI', 'APH', 'KEYS',
   'HPQ', 'HPE', 'CTSH', 'GLW', 'IT', 'ZBRA', 'CDW', 'TYL', 'ON', 'FSLR',
   'SWKS', 'NTAP', 'JNPR', 'PTC', 'AKAM', 'VRSN', 'FFIV', 'TER', 'TRMB', 'WDC',
-  'STX', 'ENPH', 'EPAM', 'GEN', 'QRVO', 'SEDG', 'PAYC', 'MPWR', 'SMCI', 'DELL',
-  'PANW', 'CRWD', 'ZS', 'DDOG', 'PLTR', 'NET', 'SNOW', 'MDB', 'OKTA', 'HUBS',
-  'TEAM',
+  'STX', 'ENPH', 'EPAM', 'GEN', 'QRVO', 'PAYC', 'MPWR', 'DELL', 'PANW', 'CRWD',
+  'GDDY', 'FICO', 'ANET', 'ROP', 'ADSK', 'WDAY', 'SPLK', 'VEEV', 'DOCU', 'ZM',
+  'CTXS', 'XLNX', 'MRVL', 'NXST', 'JKHY', 'LDOS', 'SSNC',
 
   // Healthcare (64 stocks)
   'UNH', 'JNJ', 'LLY', 'MRK', 'ABBV', 'TMO', 'ABT', 'DHR', 'PFE', 'BMY',
@@ -49,67 +49,67 @@ export const DEFAULT_STOCKS = [
   'A', 'MTD', 'RMD', 'ALGN', 'HOLX', 'ILMN', 'WAT', 'WST', 'COO', 'TFX',
   'BAX', 'BIIB', 'MRNA', 'TECH', 'MOH', 'CRL', 'DGX', 'LH', 'CAH', 'VTRS',
   'HSIC', 'XRAY', 'OGN', 'DVA', 'CTLT', 'INCY', 'PODD', 'RVTY', 'STE', 'HCA',
-  'UHS', 'GEHC', 'SOLV', 'JAZZ',
+  'UHS', 'GEHC', 'SOLV', 'BIO',
 
-  // Financials (73 stocks)
-  'JPM', 'V', 'MA', 'BAC', 'WFC', 'GS', 'MS', 'BLK', 'SCHW', 'AXP',
-  'C', 'USB', 'PNC', 'TFC', 'BK', 'COF', 'ICE', 'CME', 'CB', 'AON',
-  'MMC', 'PGR', 'AIG', 'MET', 'PRU', 'AFL', 'TRV', 'ALL', 'AJG', 'SPGI',
-  'MCO', 'MSCI', 'NDAQ', 'FIS', 'FITB', 'STT', 'MTB', 'HBAN', 'RF', 'CFG',
-  'KEY', 'NTRS', 'DFS', 'SYF', 'RJF', 'CINF', 'WRB', 'L', 'RE', 'GL',
-  'AIZ', 'BRO', 'EG', 'ACGL', 'FDS', 'MKTX', 'CBOE', 'TROW', 'IVZ', 'BEN',
-  'AMP', 'LNC', 'JKHY', 'ZION', 'CMA', 'WBS', 'FHN', 'PYPL', 'SQ', 'COIN',
-  'HOOD', 'ALLY', 'EWBC',
+  // Financials (69 stocks)
+  'BRK.B', 'JPM', 'V', 'MA', 'BAC', 'WFC', 'GS', 'MS', 'BLK', 'SCHW',
+  'AXP', 'C', 'USB', 'PNC', 'TFC', 'BK', 'COF', 'ICE', 'CME', 'CB',
+  'AON', 'MMC', 'PGR', 'AIG', 'MET', 'PRU', 'AFL', 'TRV', 'ALL', 'AJG',
+  'SPGI', 'MCO', 'MSCI', 'NDAQ', 'FIS', 'FITB', 'STT', 'MTB', 'HBAN', 'RF',
+  'CFG', 'KEY', 'NTRS', 'DFS', 'SYF', 'RJF', 'CINF', 'WRB', 'L', 'RE',
+  'GL', 'AIZ', 'BRO', 'EG', 'ACGL', 'FDS', 'MKTX', 'CBOE', 'TROW', 'IVZ',
+  'BEN', 'AMP', 'LNC', 'ZION', 'CMA', 'PYPL', 'FI', 'GPN', 'VRSN',
 
-  // Consumer Discretionary (54 stocks)
+  // Consumer Discretionary (58 stocks)
   'AMZN', 'TSLA', 'HD', 'MCD', 'NKE', 'LOW', 'SBUX', 'TGT', 'TJX', 'ROST',
   'BKNG', 'CMG', 'ORLY', 'AZO', 'MAR', 'HLT', 'YUM', 'DG', 'DLTR', 'EBAY',
   'DHI', 'LEN', 'PHM', 'NVR', 'GPC', 'BBY', 'ULTA', 'POOL', 'GRMN', 'TSCO',
   'DRI', 'WYNN', 'LVS', 'MGM', 'CZR', 'RCL', 'CCL', 'NCLH', 'EXPE', 'HAS',
-  'F', 'GM', 'APTV', 'BWA', 'LEA', 'AAP', 'KMX', 'LULU', 'NWL', 'VFC',
-  'PVH', 'TPR', 'RL', 'ETSY',
+  'F', 'GM', 'APTV', 'BWA', 'LEA', 'KMX', 'LULU', 'NWL', 'VFC', 'PVH',
+  'TPR', 'RL', 'ETSY', 'DECK', 'DPZ', 'PENN', 'WYNN', 'LKQ',
 
-  // Communication Services (23 stocks)
+  // Communication Services (26 stocks)
   'GOOGL', 'GOOG', 'META', 'NFLX', 'DIS', 'CMCSA', 'VZ', 'T', 'TMUS', 'CHTR',
   'EA', 'TTWO', 'WBD', 'PARA', 'FOX', 'FOXA', 'NWSA', 'NWS', 'OMC', 'IPG',
-  'LYV', 'MTCH', 'PINS',
+  'LYV', 'MTCH', 'ATVI', 'DISH', 'LUMN', 'VIA',
 
-  // Industrials (78 stocks)
+  // Industrials (77 stocks)
   'CAT', 'DE', 'BA', 'GE', 'HON', 'UNP', 'RTX', 'LMT', 'UPS', 'FDX',
   'EMR', 'ETN', 'ITW', 'PH', 'WM', 'RSG', 'CTAS', 'NSC', 'CSX', 'GD',
   'NOC', 'TT', 'MMM', 'JCI', 'CMI', 'AME', 'CARR', 'OTIS', 'ROK', 'PCAR',
   'FAST', 'PWR', 'PAYX', 'VRSK', 'DOV', 'CPRT', 'ODFL', 'JBHT', 'XYL', 'WAB',
-  'GWW', 'SWK', 'IEX', 'HWM', 'TDG', 'RHI', 'EXPD', 'CHR', 'CHRW', 'DAL',
-  'UAL', 'LUV', 'AAL', 'ALK', 'J', 'LDOS', 'BAH', 'AXON', 'BLDR', 'TXT',
-  'HII', 'LHX', 'URI', 'WSO', 'AOS', 'FTV', 'EME', 'GNRC', 'IR', 'HUBB',
-  'MAS', 'SNA', 'PNR', 'ALLE', 'NDSN', 'RRX', 'EFX', 'BR',
+  'GWW', 'SWK', 'IEX', 'HWM', 'TDG', 'RHI', 'EXPD', 'CHRW', 'DAL', 'UAL',
+  'LUV', 'AAL', 'ALK', 'J', 'BAH', 'AXON', 'BLDR', 'TXT', 'HII', 'LHX',
+  'URI', 'WSO', 'AOS', 'FTV', 'EME', 'GNRC', 'IR', 'HUBB', 'MAS', 'SNA',
+  'PNR', 'ALLE', 'NDSN', 'RRX', 'EFX', 'BR', 'PAYC',
 
-  // Consumer Staples (39 stocks)
+  // Consumer Staples (38 stocks)
   'PG', 'KO', 'PEP', 'COST', 'WMT', 'PM', 'MO', 'MDLZ', 'CL', 'KMB',
   'GIS', 'KHC', 'HSY', 'K', 'SJM', 'CPB', 'CAG', 'HRL', 'MKC', 'CLX',
-  'CHD', 'EL', 'KR', 'SYY', 'ADM', 'BG', 'WBA', 'STZ', 'TAP', 'BF.B',
-  'MNST', 'KDP', 'TSN', 'LW', 'KVUE', 'USFD', 'LAMB', 'POST',
+  'CHD', 'EL', 'KR', 'SYY', 'ADM', 'BG', 'WBA', 'STZ', 'TAP', 'MNST',
+  'KDP', 'TSN', 'LW', 'KVUE', 'COR', 'CASY', 'JJSF', 'LANC',
 
   // Energy (23 stocks)
-  'XOM', 'CVX', 'COP', 'EOG', 'SLB', 'MPC', 'PSX', 'VLO', 'PXD', 'OXY',
-  'WMB', 'KMI', 'HAL', 'DVN', 'HES', 'FANG', 'BKR', 'TRGP', 'OKE', 'CTRA',
-  'APA', 'EQT', 'MRO',
+  'XOM', 'CVX', 'COP', 'EOG', 'SLB', 'MPC', 'PSX', 'VLO', 'OXY', 'WMB',
+  'KMI', 'HAL', 'DVN', 'HES', 'FANG', 'BKR', 'TRGP', 'OKE', 'CTRA', 'APA',
+  'EQT', 'MRO', 'PR',
 
-  // Utilities (30 stocks)
+  // Utilities (31 stocks)
   'NEE', 'DUK', 'SO', 'D', 'AEP', 'SRE', 'EXC', 'XEL', 'ED', 'PEG',
   'WEC', 'ES', 'AWK', 'DTE', 'EIX', 'ETR', 'AEE', 'FE', 'PPL', 'CMS',
   'CNP', 'EVRG', 'ATO', 'NI', 'LNT', 'NRG', 'AES', 'PNW', 'CEG', 'VST',
+  'PCG',
 
   // Real Estate (31 stocks)
   'AMT', 'PLD', 'CCI', 'EQIX', 'PSA', 'SPG', 'O', 'WELL', 'DLR', 'AVB',
-  'EQR', 'VTR', 'ARE', 'MAA', 'UDR', 'ESS', 'INVH', 'SUI', 'ELS', 'REG',
-  'KIM', 'HST', 'CPT', 'PEAK', 'IRM', 'SBAC', 'WY', 'BXP', 'CBRE', 'CSGP',
-  'FRT',
+  'EQR', 'VTR', 'ARE', 'MAA', 'UDR', 'ESS', 'INVH', 'SUI', 'REG', 'KIM',
+  'HST', 'CPT', 'PEAK', 'IRM', 'SBAC', 'WY', 'BXP', 'CBRE', 'CSGP', 'FRT',
+  'DOC',
 
-  // Materials (27 stocks)
+  // Materials (29 stocks)
   'LIN', 'APD', 'SHW', 'ECL', 'FCX', 'NEM', 'NUE', 'DOW', 'DD', 'PPG',
   'VMC', 'MLM', 'ALB', 'CTVA', 'CE', 'EMN', 'IFF', 'IP', 'PKG', 'WRK',
-  'AVY', 'SEE', 'BALL', 'AMCR', 'CF', 'MOS', 'FMC'
+  'AVY', 'SEE', 'BALL', 'AMCR', 'CF', 'MOS', 'FMC', 'RPM', 'SMG'
 ];
 
 // Sector mapping for display (S&P 500 complete)
