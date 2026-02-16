@@ -9,6 +9,9 @@ const dbPath = path.join(__dirname, 'data.json');
 const defaultData = {
   portfolio: {
     cash: 100000,
+    totalCommissionsPaid: 0,  // Cumulative broker fees
+    totalTaxesPaid: 0,        // Cumulative capital gains tax
+    totalRealizedPL: 0,       // Cumulative realized P&L (before tax)
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   },
@@ -53,6 +56,38 @@ export function updateCash(newCash) {
   db.portfolio.updatedAt = new Date().toISOString();
   saveDb(db);
   return db.portfolio;
+}
+
+// Update cumulative fees and taxes
+export function addCommission(amount) {
+  db.portfolio.totalCommissionsPaid = (db.portfolio.totalCommissionsPaid || 0) + amount;
+  db.portfolio.updatedAt = new Date().toISOString();
+  saveDb(db);
+  return db.portfolio.totalCommissionsPaid;
+}
+
+export function addTax(amount) {
+  db.portfolio.totalTaxesPaid = (db.portfolio.totalTaxesPaid || 0) + amount;
+  db.portfolio.updatedAt = new Date().toISOString();
+  saveDb(db);
+  return db.portfolio.totalTaxesPaid;
+}
+
+export function addRealizedPL(amount) {
+  db.portfolio.totalRealizedPL = (db.portfolio.totalRealizedPL || 0) + amount;
+  db.portfolio.updatedAt = new Date().toISOString();
+  saveDb(db);
+  return db.portfolio.totalRealizedPL;
+}
+
+// Get cumulative fee/tax summary
+export function getFeesSummary() {
+  return {
+    totalCommissionsPaid: db.portfolio.totalCommissionsPaid || 0,
+    totalTaxesPaid: db.portfolio.totalTaxesPaid || 0,
+    totalRealizedPL: db.portfolio.totalRealizedPL || 0,
+    totalCosts: (db.portfolio.totalCommissionsPaid || 0) + (db.portfolio.totalTaxesPaid || 0)
+  };
 }
 
 // Holdings functions
@@ -184,6 +219,9 @@ export function resetPortfolio() {
   db = {
     portfolio: {
       cash: 100000,
+      totalCommissionsPaid: 0,
+      totalTaxesPaid: 0,
+      totalRealizedPL: 0,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     },

@@ -245,6 +245,13 @@ export interface Alert {
   created_at: string;
 }
 
+export interface FeesSummary {
+  totalCommissionsPaid: number;
+  totalTaxesPaid: number;
+  totalRealizedPL: number;
+  totalCosts: number;
+}
+
 export interface Portfolio {
   cash: number;
   holdings: Holding[];
@@ -253,6 +260,7 @@ export interface Portfolio {
   totalUnrealizedPL: number;
   totalUnrealizedPLPercent: number;
   totalEquity: number;
+  feesSummary?: FeesSummary;
   timestamp: number;
 }
 

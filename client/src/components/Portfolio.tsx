@@ -248,6 +248,45 @@ export default function Portfolio({
         </div>
       </div>
 
+      {/* Fees & Taxes Summary */}
+      {data.feesSummary && (data.feesSummary.totalCommissionsPaid > 0 || data.feesSummary.totalTaxesPaid > 0 || data.feesSummary.totalRealizedPL !== 0) && (
+        <div className="bg-gray-800 rounded-2xl p-4 md:p-6 border border-gray-700">
+          <div className="flex items-center gap-2 mb-4">
+            <span className="text-xl">📋</span>
+            <p className="text-gray-400 text-sm font-medium">{isRTL ? 'סיכום עמלות ומיסים' : 'Fees & Taxes Summary'}</p>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="bg-gray-900 rounded-xl p-4">
+              <p className="text-gray-500 text-xs mb-1">{isRTL ? 'רווח/הפסד ממומש' : 'Realized P&L'}</p>
+              <p className={`text-lg font-bold ${data.feesSummary.totalRealizedPL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {formatCurrency(data.feesSummary.totalRealizedPL)}
+              </p>
+            </div>
+            <div className="bg-gray-900 rounded-xl p-4">
+              <p className="text-gray-500 text-xs mb-1">{isRTL ? 'עמלות ששולמו' : 'Commissions Paid'}</p>
+              <p className="text-lg font-bold text-amber-400">
+                {formatCurrency(data.feesSummary.totalCommissionsPaid)}
+              </p>
+            </div>
+            <div className="bg-gray-900 rounded-xl p-4">
+              <p className="text-gray-500 text-xs mb-1">{isRTL ? 'מיסים ששולמו' : 'Taxes Paid'}</p>
+              <p className="text-lg font-bold text-amber-400">
+                {formatCurrency(data.feesSummary.totalTaxesPaid)}
+              </p>
+            </div>
+            <div className="bg-gray-900 rounded-xl p-4">
+              <p className="text-gray-500 text-xs mb-1">{isRTL ? 'סה"כ עלויות' : 'Total Costs'}</p>
+              <p className="text-lg font-bold text-red-400">
+                {formatCurrency(data.feesSummary.totalCosts)}
+              </p>
+            </div>
+          </div>
+          <p className="text-gray-500 text-xs mt-3">
+            {isRTL ? '* עמלה: מינימום $7.50 לעסקה | מס רווחי הון: 25% על רווחים' : '* Commission: $7.50 min per trade | Capital Gains Tax: 25% on profits'}
+          </p>
+        </div>
+      )}
+
       {/* Actions */}
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold text-white">{t('yourHoldings')} ({data.holdings.length})</h2>

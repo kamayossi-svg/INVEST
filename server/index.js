@@ -17,8 +17,16 @@ import {
   resetPortfolio,
   getAlerts,
   markAlertRead,
-  markAllAlertsRead
+  markAllAlertsRead,
+  addCommission,
+  addTax,
+  addRealizedPL,
+  getFeesSummary
 } from './database.js';
+
+// Broker & Tax Constants (IBI Israel)
+const MIN_COMMISSION = 7.5;  // $7.50 minimum per trade
+const TAX_RATE = 0.25;       // 25% Israel capital gains tax
 import {
   getQuote,
   getQuotes,
@@ -174,6 +182,7 @@ app.get('/api/portfolio', async (req, res) => {
       const totalUnrealizedPL = totalMarketValue - totalCostBasis;
       const totalEquity = portfolio.cash + totalMarketValue;
 
+      const feesSummary = getFeesSummary();
       res.json({
         success: true,
         data: {
@@ -184,10 +193,12 @@ app.get('/api/portfolio', async (req, res) => {
           totalUnrealizedPL,
           totalUnrealizedPLPercent: totalCostBasis > 0 ? (totalUnrealizedPL / totalCostBasis) * 100 : 0,
           totalEquity,
+          feesSummary,
           timestamp: Date.now()
         }
       });
     } else {
+      const feesSummary = getFeesSummary();
       res.json({
         success: true,
         data: {
@@ -198,6 +209,7 @@ app.get('/api/portfolio', async (req, res) => {
           totalUnrealizedPL: 0,
           totalUnrealizedPLPercent: 0,
           totalEquity: portfolio.cash,
+          feesSummary,
           timestamp: Date.now()
         }
       });
@@ -268,12 +280,16 @@ app.post('/api/trade/buy', async (req, res) => {
     const price = quote.price;
     const total = price * shares;
 
-    // Check if user has enough cash
+    // Calculate commission (0.1% with $7.50 minimum)
+    const commission = Math.max(MIN_COMMISSION, total * 0.001);
+
+    // Check if user has enough cash (including commission)
     const portfolio = getPortfolio();
-    if (portfolio.cash < total) {
+    const totalWithCommission = total + commission;
+    if (portfolio.cash < totalWithCommission) {
       return res.status(400).json({
         success: false,
-        error: `Insufficient funds. Required: $${total.toFixed(2)}, Available: $${portfolio.cash.toFixed(2)}`
+        error: `Insufficient funds. Required: $${totalWithCommission.toFixed(2)} (incl. $${commission.toFixed(2)} fee), Available: $${portfolio.cash.toFixed(2)}`
       });
     }
 
@@ -281,8 +297,11 @@ app.post('/api/trade/buy', async (req, res) => {
     const takeProfit = requestedTakeProfit || price * 1.08;
     const stopLoss = requestedStopLoss || price * 0.96;
 
-    // Update cash
-    updateCash(portfolio.cash - total);
+    // Update cash (deduct trade amount + commission)
+    updateCash(portfolio.cash - totalWithCommission);
+
+    // Track commission
+    addCommission(commission);
 
     // Update holdings (calculate new average cost if adding to position)
     const existingHolding = getHolding(symbol.toUpperCase());
@@ -301,7 +320,7 @@ app.post('/api/trade/buy', async (req, res) => {
     // Store holding with TP/SL for automatic monitoring
     upsertHolding(symbol.toUpperCase(), newShares, newAvgCost, takeProfit, stopLoss);
 
-    // Record trade
+    // Record trade with commission
     const trade = {
       id: uuidv4(),
       symbol: symbol.toUpperCase(),
@@ -309,6 +328,7 @@ app.post('/api/trade/buy', async (req, res) => {
       shares,
       price,
       total,
+      commission,
       take_profit: takeProfit,
       stop_loss: stopLoss
     };
@@ -318,8 +338,9 @@ app.post('/api/trade/buy', async (req, res) => {
       success: true,
       data: {
         trade,
-        message: `Bought ${shares} shares of ${symbol.toUpperCase()} at $${price.toFixed(2)}`,
-        newCashBalance: portfolio.cash - total,
+        message: `Bought ${shares} shares of ${symbol.toUpperCase()} at $${price.toFixed(2)} (Fee: $${commission.toFixed(2)})`,
+        newCashBalance: portfolio.cash - totalWithCommission,
+        commission,
         tradingPlan: {
           entry: price,
           takeProfit,
@@ -373,27 +394,51 @@ app.post('/api/trade/sell', async (req, res) => {
     const price = quote.price;
     const total = price * shares;
 
-    // Update cash
+    // Calculate commission (0.1% with $7.50 minimum)
+    const commission = Math.max(MIN_COMMISSION, total * 0.001);
+
+    // Calculate realized P&L (before commission and tax)
+    const costBasis = shares * holding.avg_cost;
+    const grossPL = total - costBasis;
+
+    // Calculate tax (only on profit after commission)
+    const profitAfterCommission = grossPL - commission;
+    const taxAmount = profitAfterCommission > 0 ? profitAfterCommission * TAX_RATE : 0;
+
+    // Net proceeds = Sale total - Commission - Tax
+    const netProceeds = total - commission - taxAmount;
+
+    // Update cash (add net proceeds)
     const portfolio = getPortfolio();
-    updateCash(portfolio.cash + total);
+    updateCash(portfolio.cash + netProceeds);
+
+    // Track commission and tax
+    addCommission(commission);
+    if (taxAmount > 0) {
+      addTax(taxAmount);
+    }
+    addRealizedPL(grossPL);
 
     // Update holdings
     const newShares = holding.shares - shares;
     upsertHolding(symbol.toUpperCase(), newShares, holding.avg_cost);
 
-    // Calculate realized P&L
-    const costBasis = shares * holding.avg_cost;
-    const realizedPL = total - costBasis;
-    const realizedPLPercent = (realizedPL / costBasis) * 100;
+    // Calculate net realized P&L (after fees and tax)
+    const netRealizedPL = grossPL - commission - taxAmount;
+    const realizedPLPercent = (grossPL / costBasis) * 100;
 
-    // Record trade
+    // Record trade with all fee details
     const trade = {
       id: uuidv4(),
       symbol: symbol.toUpperCase(),
       action: 'SELL',
       shares,
       price,
-      total
+      total,
+      commission,
+      taxAmount,
+      grossPL,
+      netRealizedPL
     };
     addTrade(trade);
 
@@ -402,8 +447,11 @@ app.post('/api/trade/sell', async (req, res) => {
       data: {
         trade,
         message: `Sold ${shares} shares of ${symbol.toUpperCase()} at $${price.toFixed(2)}`,
-        newCashBalance: portfolio.cash + total,
-        realizedPL,
+        newCashBalance: portfolio.cash + netProceeds,
+        grossPL,
+        commission,
+        taxAmount,
+        netRealizedPL,
         realizedPLPercent
       }
     });
