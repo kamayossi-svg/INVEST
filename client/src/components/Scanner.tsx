@@ -297,6 +297,24 @@ function ExpandedRowDetail({ stock, isRTL }: { stock: StockAnalysis; isRTL: bool
               <span className="text-red-400 font-medium">{battlePlan.suggestedPosition?.maxRisk ? formatCurrency(battlePlan.suggestedPosition.maxRisk) : 'N/A'}</span>
             </div>
           </div>
+          {/* Net Profit After Fees & Tax */}
+          {battlePlan.suggestedPosition?.netProfit !== undefined && (
+            <div className="mt-3 p-3 bg-emerald-500/10 rounded-lg border border-emerald-500/30">
+              <div className="flex items-center justify-between">
+                <span className="text-emerald-400 text-xs font-medium flex items-center gap-1">
+                  <span>💰</span> {isRTL ? 'רווח נטו משוער' : 'Est. Net Profit'}
+                </span>
+                <span className="text-emerald-400 font-bold">
+                  {formatCurrency(battlePlan.suggestedPosition.netProfit)}
+                </span>
+              </div>
+              <p className="text-emerald-500/70 text-[10px] mt-1">
+                {isRTL
+                  ? `לאחר $${battlePlan.suggestedPosition.totalCommission} עמלות ו-25% מס רווחי הון`
+                  : `After $${battlePlan.suggestedPosition.totalCommission} fees & 25% tax`}
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -614,6 +632,24 @@ function ExpandedRowDetail({ stock, isRTL }: { stock: StockAnalysis; isRTL: bool
                 </p>
               </div>
             </div>
+            {/* Net Profit After Fees & Tax - Desktop */}
+            {battlePlan.suggestedPosition?.netProfit !== undefined && (
+              <div className="mt-3 p-3 bg-emerald-500/10 rounded-lg border border-emerald-500/30">
+                <div className="flex items-center justify-between">
+                  <span className="text-emerald-400 text-sm font-medium flex items-center gap-2">
+                    <span>💰</span> {isRTL ? 'רווח נטו משוער' : 'Estimated Net Profit'}
+                  </span>
+                  <span className="text-emerald-400 font-bold text-lg">
+                    {formatCurrency(battlePlan.suggestedPosition.netProfit)}
+                  </span>
+                </div>
+                <p className="text-emerald-500/70 text-xs mt-1">
+                  {isRTL
+                    ? `לאחר $${battlePlan.suggestedPosition.totalCommission} עמלות (IBI) ו-25% מס רווחי הון`
+                    : `After $${battlePlan.suggestedPosition.totalCommission} broker fees (IBI) & 25% capital gains tax`}
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </div>

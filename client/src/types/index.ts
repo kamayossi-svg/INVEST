@@ -76,6 +76,13 @@ export interface SuggestedPosition {
   investment: number;
   maxRisk: number;
   maxProfit: number;
+  // Net Profit Calculation (After Fees & Tax)
+  grossProfit?: number;
+  totalCommission?: number;
+  profitAfterFees?: number;
+  taxAmount?: number;
+  netProfit?: number;
+  taxRate?: number;
 }
 
 export type Verdict = 'BUY_NOW' | 'WAIT_FOR_DIP' | 'WATCH' | 'AVOID';

@@ -289,6 +289,13 @@ const COMPANY_PROFILE_CACHE_TTL = 86400000; // 24 hours for company profile (rar
 const COMPANY_NEWS_CACHE_TTL = 900000; // 15 minutes for news
 const EARNINGS_CACHE_TTL = 3600000; // 1 hour for earnings data
 
+// =====================
+// BROKER FEES & TAX (Israel - IBI Style)
+// =====================
+const MIN_COMMISSION = 7.5;  // USD per trade (IBI minimum)
+const TOTAL_COMMISSION = MIN_COMMISSION * 2;  // Buy + Sell = $15 per round trip
+const TAX_RATE = 0.25;  // 25% Israel capital gains tax
+
 // Scan results cache for market-closed consistency
 let lastScanResults = null;
 let lastScanTimestamp = null;
@@ -2134,7 +2141,18 @@ function generateBattlePlan(analysis) {
       shares: suggestedShares,
       investment: suggestedInvestment,
       maxRisk: parseFloat((suggestedShares * lossPerShare).toFixed(2)),
-      maxProfit: parseFloat((suggestedShares * profitPerShare).toFixed(2))
+      maxProfit: parseFloat((suggestedShares * profitPerShare).toFixed(2)),
+      // Net Profit Calculation (After Fees & Tax)
+      grossProfit: parseFloat((suggestedShares * profitPerShare).toFixed(2)),
+      totalCommission: TOTAL_COMMISSION,
+      profitAfterFees: parseFloat((suggestedShares * profitPerShare - TOTAL_COMMISSION).toFixed(2)),
+      taxAmount: parseFloat(
+        Math.max(0, (suggestedShares * profitPerShare - TOTAL_COMMISSION) * TAX_RATE).toFixed(2)
+      ),
+      netProfit: parseFloat(
+        Math.max(0, (suggestedShares * profitPerShare - TOTAL_COMMISSION) * (1 - TAX_RATE)).toFixed(2)
+      ),
+      taxRate: TAX_RATE
     }
   };
 }
