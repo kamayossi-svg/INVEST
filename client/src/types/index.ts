@@ -149,6 +149,11 @@ export interface SafetyData {
   breakoutQuality?: string;
   analystDivergence?: boolean;
   analystConsensus?: string;
+  // Earnings Risk Data
+  nextEarningsDate?: string | null;
+  daysUntilEarnings?: number | null;
+  earningsRisk?: 'none' | 'low' | 'medium' | 'high' | 'critical' | 'unknown';
+  hasUpcomingEarnings?: boolean;
 }
 
 export interface BattlePlan {
@@ -172,6 +177,13 @@ export interface BattlePlan {
   previousVerdict?: Verdict | null;
 }
 
+export interface EarningsData {
+  nextEarningsDate: string | null;
+  daysUntilEarnings: number | null;
+  earningsRisk: 'none' | 'low' | 'medium' | 'high' | 'critical' | 'unknown';
+  hasUpcomingEarnings: boolean;
+}
+
 export interface StockAnalysis extends Quote {
   sma20: number | null;
   sma50: number | null;
@@ -192,6 +204,7 @@ export interface StockAnalysis extends Quote {
   insights?: Insights;
   battlePlan: BattlePlan;
   analystData?: AnalystData;
+  earningsData?: EarningsData;
 }
 
 export interface Holding {

@@ -280,12 +280,14 @@ const historicalCache = new Map();
 const analystCache = new Map();
 const companyProfileCache = new Map();
 const companyNewsCache = new Map();
+const earningsCache = new Map();
 const QUOTE_CACHE_TTL_MARKET_OPEN = 60000;    // 60 seconds when market is open
 const QUOTE_CACHE_TTL_MARKET_CLOSED = Infinity; // Never expire when market is closed
 const HISTORICAL_CACHE_TTL = 300000; // 5 minutes for historical data
 const ANALYST_CACHE_TTL = 3600000;   // 1 hour for analyst data (changes infrequently)
 const COMPANY_PROFILE_CACHE_TTL = 86400000; // 24 hours for company profile (rarely changes)
 const COMPANY_NEWS_CACHE_TTL = 900000; // 15 minutes for news
+const EARNINGS_CACHE_TTL = 3600000; // 1 hour for earnings data
 
 // Scan results cache for market-closed consistency
 let lastScanResults = null;
@@ -1362,6 +1364,91 @@ async function fetchCompanyNews(symbol, limit = 3) {
 }
 
 /**
+ * Fetch earnings calendar from Finnhub
+ * Returns: nextEarningsDate, daysUntilEarnings, earningsRisk
+ */
+async function fetchEarningsCalendar(symbol) {
+  const upperSymbol = symbol.toUpperCase();
+
+  // Check cache first
+  const cached = earningsCache.get(upperSymbol);
+  if (cached && Date.now() - cached.timestamp < EARNINGS_CACHE_TTL) {
+    return cached.data;
+  }
+
+  try {
+    // Get earnings calendar for the next 60 days
+    const fromDate = new Date().toISOString().split('T')[0];
+    const toDate = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    const response = await fetch(
+      `${FINNHUB_BASE_URL}/calendar/earnings?symbol=${upperSymbol}&from=${fromDate}&to=${toDate}&token=${FINNHUB_API_KEY}`
+    );
+
+    if (!response.ok) {
+      throw new Error(`Finnhub API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    // Find the next earnings date for this symbol
+    let nextEarningsDate = null;
+    let daysUntilEarnings = null;
+    let earningsRisk = 'none'; // none, low, medium, high
+
+    if (data.earningsCalendar && data.earningsCalendar.length > 0) {
+      // Sort by date and find the next upcoming earnings
+      const upcoming = data.earningsCalendar
+        .filter(e => e.symbol === upperSymbol && new Date(e.date) >= new Date())
+        .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+      if (upcoming.length > 0) {
+        nextEarningsDate = upcoming[0].date;
+        const earningsDateObj = new Date(nextEarningsDate);
+        const now = new Date();
+        now.setHours(0, 0, 0, 0);
+        earningsDateObj.setHours(0, 0, 0, 0);
+
+        daysUntilEarnings = Math.ceil((earningsDateObj - now) / (1000 * 60 * 60 * 24));
+
+        // Determine risk level
+        if (daysUntilEarnings <= 2) {
+          earningsRisk = 'critical'; // Within 48 hours - hard block
+        } else if (daysUntilEarnings <= 7) {
+          earningsRisk = 'high'; // Within 7 days - penalty
+        } else if (daysUntilEarnings <= 14) {
+          earningsRisk = 'medium';
+        } else {
+          earningsRisk = 'low';
+        }
+      }
+    }
+
+    const result = {
+      nextEarningsDate,
+      daysUntilEarnings,
+      earningsRisk,
+      hasUpcomingEarnings: daysUntilEarnings !== null && daysUntilEarnings <= 14
+    };
+
+    // Cache the result
+    earningsCache.set(upperSymbol, { data: result, timestamp: Date.now() });
+    console.log(`[${upperSymbol}] Earnings: ${nextEarningsDate || 'None found'} (${daysUntilEarnings || 'N/A'} days, Risk: ${earningsRisk})`);
+    return result;
+
+  } catch (error) {
+    console.error(`[${upperSymbol}] Earnings calendar error:`, error.message);
+    // Return safe default on error
+    return {
+      nextEarningsDate: null,
+      daysUntilEarnings: null,
+      earningsRisk: 'unknown',
+      hasUpcomingEarnings: false
+    };
+  }
+}
+
+/**
  * Get combined company info (profile + news)
  * Exported function for API use
  */
@@ -1600,6 +1687,14 @@ function generateBattlePlan(analysis) {
   const weakBreakoutData = analysis.weakBreakoutData || { isWeakBreakout: false };
   const analystData = analysis.analystData || null;
 
+  // EARNINGS DATA - Critical for risk management
+  const earningsData = analysis.earningsData || {
+    nextEarningsDate: null,
+    daysUntilEarnings: null,
+    earningsRisk: 'unknown',
+    hasUpcomingEarnings: false
+  };
+
   // Calculate entry zone (±1% from current price)
   const entryLow = parseFloat((price * 0.99).toFixed(2));
   const entryHigh = parseFloat((price * 1.01).toFixed(2));
@@ -1735,6 +1830,17 @@ function generateBattlePlan(analysis) {
     warnings.push(analystDivergence.warning);
   }
 
+  // EARNINGS RISK PENALTY
+  // Critical: earnings within 48h is a hard block (handled in verdict section)
+  // High: earnings within 7 days gets -25 penalty
+  if (earningsData.earningsRisk === 'high') {
+    confidenceScore -= 25;
+    warnings.push(`EARNINGS SOON: ${earningsData.daysUntilEarnings} days until earnings (${earningsData.nextEarningsDate})`);
+  } else if (earningsData.earningsRisk === 'medium') {
+    confidenceScore -= 10;
+    warnings.push(`Earnings in ${earningsData.daysUntilEarnings} days (${earningsData.nextEarningsDate})`);
+  }
+
   // BONUSES for strong conditions
   if (crossoverData.goldenCross && crossoverData.trendStrength > 2) {
     confidenceScore += 15; // Strong golden cross
@@ -1759,6 +1865,12 @@ function generateBattlePlan(analysis) {
     reasoning = isStaleData
       ? 'Data may be stale. Wait for fresh market data before making decisions.'
       : 'Waiting for market data. Analysis will be available when market is open.';
+  }
+  // Priority 1.5: EARNINGS HARD BLOCK - within 48 hours
+  else if (earningsData.earningsRisk === 'critical') {
+    verdict = 'AVOID';
+    reasoning = `⚠️ EARNINGS RISK: Earnings report in ${earningsData.daysUntilEarnings} days (${earningsData.nextEarningsDate}). Avoid new positions within 48 hours of earnings due to high volatility risk.`;
+    warnings.push(`CRITICAL: Earnings in ${earningsData.daysUntilEarnings <= 1 ? 'less than 24 hours' : earningsData.daysUntilEarnings + ' days'}`);
   }
   // Priority 2: Dangerous patterns (AVOID)
   else if (crossoverData.deathCross) {
@@ -1987,7 +2099,12 @@ function generateBattlePlan(analysis) {
       isWeakBreakout: weakBreakoutData.isWeakBreakout,
       breakoutQuality: weakBreakoutData.breakoutQuality,
       analystDivergence: analystDivergence.hasDivergence,
-      analystConsensus: analystData?.consensus || null
+      analystConsensus: analystData?.consensus || null,
+      // Earnings Risk Data
+      nextEarningsDate: earningsData.nextEarningsDate,
+      daysUntilEarnings: earningsData.daysUntilEarnings,
+      earningsRisk: earningsData.earningsRisk,
+      hasUpcomingEarnings: earningsData.hasUpcomingEarnings
     },
     entryZone: { low: entryLow, high: entryHigh, current: price },
     profitTarget: {
@@ -2039,8 +2156,11 @@ export async function analyzeStock(symbol) {
     const historical = await fetchHistoricalData(symbol);
     const hasRealData = historical !== null && historical.isReal === true;
 
-    // Fetch Wall Street analyst ratings from Finnhub
-    const analystData = await fetchAnalystRatings(symbol);
+    // Fetch Wall Street analyst ratings and earnings calendar from Finnhub
+    const [analystData, earningsData] = await Promise.all([
+      fetchAnalystRatings(symbol),
+      fetchEarningsCalendar(symbol)
+    ]);
 
     let sma20 = null;
     let sma50 = null;
@@ -2158,6 +2278,7 @@ export async function analyzeStock(symbol) {
       fallingKnifeData, // Consecutive down days detection
       volatilityData, // Volatility risk assessment
       analystData, // Wall Street analyst ratings from Finnhub
+      earningsData, // Earnings calendar data from Finnhub
       // FALSE POSITIVE DETECTION DATA (Item 5)
       bullTrapData, // Bull trap detection
       divergenceData, // RSI divergence detection

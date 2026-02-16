@@ -1,28 +1,34 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useMarketScan, usePortfolio, useTrades, useAlerts } from './hooks/useApi';
 import { useLanguage } from './i18n';
+import { AuthProvider, useAuth } from './firebase/AuthContext';
 import Scanner from './components/Scanner';
 import Portfolio from './components/Portfolio';
 import TradeHistory from './components/TradeHistory';
 import Header from './components/Header';
+import LoginPage from './components/LoginPage';
 
 type Tab = 'scanner' | 'portfolio';
 
-function App() {
+// Main app content (protected)
+function AppContent() {
   const [activeTab, setActiveTab] = useState<Tab>('scanner');
   const market = useMarketScan();
   const portfolio = usePortfolio();
   const trades = useTrades();
   const alerts = useAlerts();
   const { t, isRTL } = useLanguage();
+  const { user, logout } = useAuth();
 
   // Initial load
   useEffect(() => {
-    market.scan();
-    portfolio.refresh();
-    trades.refresh();
-    alerts.refresh();
-  }, []);
+    if (user) {
+      market.scan();
+      portfolio.refresh();
+      trades.refresh();
+      alerts.refresh();
+    }
+  }, [user]);
 
   // Refresh data after trade
   const handleTradeComplete = useCallback(() => {
@@ -34,6 +40,8 @@ function App() {
 
   // Auto-refresh every 30 seconds
   useEffect(() => {
+    if (!user) return;
+
     const interval = setInterval(() => {
       if (activeTab === 'scanner') {
         market.scan();
@@ -42,7 +50,16 @@ function App() {
       }
     }, 30000);
     return () => clearInterval(interval);
-  }, [activeTab, market, portfolio]);
+  }, [activeTab, market, portfolio, user]);
+
+  // Handle logout
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } catch {
+      // Error handled by AuthContext
+    }
+  };
 
   return (
     <div className={`min-h-screen bg-gray-900 ${isRTL ? 'rtl' : 'ltr'}`}>
@@ -58,7 +75,7 @@ function App() {
 
       {/* Desktop Tab Navigation - Hidden on mobile */}
       <div className="hidden md:block border-b border-gray-700 bg-gray-800/50">
-        <div className="max-w-7xl mx-auto px-4">
+        <div className="max-w-7xl mx-auto px-4 flex items-center justify-between">
           <nav className="flex">
             <button
               onClick={() => setActiveTab('scanner')}
@@ -98,6 +115,22 @@ function App() {
               )}
             </button>
           </nav>
+
+          {/* User info and logout button - Desktop only */}
+          <div className="flex items-center gap-4">
+            <span className="text-gray-400 text-sm">
+              {user?.email}
+            </span>
+            <button
+              onClick={handleLogout}
+              className="text-gray-400 hover:text-red-400 text-sm transition-colors flex items-center gap-1"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+              {isRTL ? 'התנתק' : 'Logout'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -211,6 +244,27 @@ function App() {
               <div className="absolute top-0 left-1/4 right-1/4 h-0.5 bg-blue-500 rounded-full" />
             )}
           </button>
+
+          {/* Logout Tab - Mobile only */}
+          <button
+            onClick={handleLogout}
+            className="flex-1 flex flex-col items-center justify-center min-h-[60px] py-2 transition-colors text-gray-500 active:text-red-400"
+          >
+            <svg
+              className="w-6 h-6 mb-1"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
+              />
+            </svg>
+            <span className="text-xs font-medium">{isRTL ? 'יציאה' : 'Logout'}</span>
+          </button>
         </div>
       </nav>
 
@@ -220,4 +274,40 @@ function App() {
   );
 }
 
-export default App;
+// App wrapper with authentication
+function App() {
+  const { user, loading } = useAuth();
+
+  // Show loading spinner while checking auth state
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl flex items-center justify-center text-3xl animate-pulse">
+            📈
+          </div>
+          <div className="w-8 h-8 border-3 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+        </div>
+      </div>
+    );
+  }
+
+  // Show login page if not authenticated
+  if (!user) {
+    return <LoginPage />;
+  }
+
+  // Show main app if authenticated
+  return <AppContent />;
+}
+
+// Root component with AuthProvider
+function AppRoot() {
+  return (
+    <AuthProvider>
+      <App />
+    </AuthProvider>
+  );
+}
+
+export default AppRoot;
