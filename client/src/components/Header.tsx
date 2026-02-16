@@ -40,8 +40,37 @@ export default function Header({
 
   return (
     <header className="bg-gray-800 border-b border-gray-700">
-      <div className="max-w-7xl mx-auto px-4 py-4">
-        <div className="flex items-center justify-between">
+      <div className="max-w-7xl mx-auto px-3 md:px-4 py-2 md:py-4">
+        {/* Mobile Layout */}
+        <div className="flex md:hidden items-center justify-between">
+          {/* Logo only on mobile */}
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center text-lg">
+              📈
+            </div>
+            <MarketStatus />
+          </div>
+
+          {/* Mobile right side: simplified */}
+          <div className="flex items-center gap-2">
+            <AlertNotification
+              alerts={alerts}
+              onMarkRead={onMarkAlertRead}
+              onMarkAllRead={onMarkAllAlertsRead}
+              onRefresh={onRefreshAlerts}
+            />
+            <LanguageSwitcher />
+            <div className="text-right">
+              <p className="text-lg font-bold text-white">{formatCurrency(totalEquity)}</p>
+              <p className={`text-xs ${isProfit ? 'text-green-400' : 'text-red-400'}`}>
+                {isProfit ? '↑' : '↓'} {formatCurrency(Math.abs(totalReturn))}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Desktop Layout */}
+        <div className="hidden md:flex items-center justify-between">
           {/* Logo + Market Status */}
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-3">

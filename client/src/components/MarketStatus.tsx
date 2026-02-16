@@ -283,33 +283,49 @@ export default function MarketStatus() {
   };
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2 bg-gray-900/50 rounded-xl border border-gray-700/50">
-      {/* Status dot with pulse animation when open */}
-      <div className="relative">
-        <div className={`w-2.5 h-2.5 rounded-full ${getDotColor()}`} />
-        {status.isOpen && (
-          <div className={`absolute inset-0 w-2.5 h-2.5 rounded-full ${getDotColor()} animate-ping opacity-75`} />
-        )}
+    <>
+      {/* Mobile: Compact status indicator */}
+      <div className="md:hidden flex items-center gap-1.5 px-2 py-1 bg-gray-900/50 rounded-lg border border-gray-700/50">
+        <div className="relative">
+          <div className={`w-2 h-2 rounded-full ${getDotColor()}`} />
+          {status.isOpen && (
+            <div className={`absolute inset-0 w-2 h-2 rounded-full ${getDotColor()} animate-ping opacity-75`} />
+          )}
+        </div>
+        <span className={`text-xs font-medium ${getTextColor()}`}>
+          {status.isOpen ? (isRTL ? 'פתוח' : 'Open') : (isRTL ? 'סגור' : 'Closed')}
+        </span>
       </div>
 
-      {/* Status info */}
-      <div className="flex flex-col">
-        <span className={`text-sm font-medium ${getTextColor()}`}>
-          {getStatusLabel()}
-        </span>
-        <span className="text-xs text-gray-500">
-          {getTimeLabel()}
-        </span>
-        {/* Trading hours info */}
-        <div className="mt-1 pt-1 border-t border-gray-700/30">
-          <span className="text-xs text-gray-600">
-            {getTradingHoursText()}
+      {/* Desktop: Full status with details */}
+      <div className="hidden md:flex items-center gap-3 px-3 py-2 bg-gray-900/50 rounded-xl border border-gray-700/50">
+        {/* Status dot with pulse animation when open */}
+        <div className="relative">
+          <div className={`w-2.5 h-2.5 rounded-full ${getDotColor()}`} />
+          {status.isOpen && (
+            <div className={`absolute inset-0 w-2.5 h-2.5 rounded-full ${getDotColor()} animate-ping opacity-75`} />
+          )}
+        </div>
+
+        {/* Status info */}
+        <div className="flex flex-col">
+          <span className={`text-sm font-medium ${getTextColor()}`}>
+            {getStatusLabel()}
           </span>
-          <span className="text-xs text-gray-600 block">
-            {getPreMarketText()}
+          <span className="text-xs text-gray-500">
+            {getTimeLabel()}
           </span>
+          {/* Trading hours info */}
+          <div className="mt-1 pt-1 border-t border-gray-700/30">
+            <span className="text-xs text-gray-600">
+              {getTradingHoursText()}
+            </span>
+            <span className="text-xs text-gray-600 block">
+              {getPreMarketText()}
+            </span>
+          </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }
