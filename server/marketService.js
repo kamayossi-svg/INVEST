@@ -1529,9 +1529,10 @@ export async function getQuote(symbol, useCache = true) {
     const change = price - prevClose;
     const changePercent = (change / prevClose) * 100;
 
-    // Use actual bar timestamp from Alpaca, not current time
-    // This ensures staleness checks are based on when data was valid, not when fetched
-    const barTimestamp = latestBar.Timestamp ? new Date(latestBar.Timestamp).getTime() : Date.now();
+    // Use fetch time for staleness checks (to track when we last refreshed)
+    // Store bar timestamp separately for reference
+    const fetchTimestamp = Date.now();
+    const barTimestamp = latestBar.Timestamp ? new Date(latestBar.Timestamp).getTime() : fetchTimestamp;
 
     const result = {
       symbol: upperSymbol,
@@ -1547,14 +1548,15 @@ export async function getQuote(symbol, useCache = true) {
       vwap: latestBar.VWAP || price,
       name: upperSymbol,
       sector: SECTOR_MAP[upperSymbol] || 'Unknown',
-      timestamp: barTimestamp,  // Use actual bar timestamp, not fetch time
-      dataDate: latestBar.Timestamp,  // Store the actual date string for reference
+      timestamp: fetchTimestamp,  // Use fetch time for staleness checks
+      dataDate: latestBar.Timestamp,  // Store the actual bar date for reference
+      barTimestamp: barTimestamp,  // Preserve the actual bar timestamp
       isLive: isMarketOpen().isOpen,  // Only "live" if market is actually open
       source: 'Alpaca'
     };
 
-    // Cache with the bar timestamp (not current time) for consistent staleness checks
-    quoteCache.set(upperSymbol, { data: result, timestamp: barTimestamp });
+    // Cache with fetch timestamp for proper staleness tracking
+    quoteCache.set(upperSymbol, { data: result, timestamp: fetchTimestamp });
     console.log(`[${upperSymbol}] ✅ $${price.toFixed(2)} (${changePercent >= 0 ? '+' : ''}${changePercent.toFixed(2)}%)`);
     return result;
 
