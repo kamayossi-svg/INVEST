@@ -284,10 +284,30 @@ const earningsCache = new Map();
 const QUOTE_CACHE_TTL_MARKET_OPEN = 60000;    // 60 seconds when market is open
 const QUOTE_CACHE_TTL_MARKET_CLOSED = Infinity; // Never expire when market is closed
 const HISTORICAL_CACHE_TTL = 300000; // 5 minutes for historical data
-const ANALYST_CACHE_TTL = 3600000;   // 1 hour for analyst data (changes infrequently)
+const ANALYST_CACHE_TTL = 86400000;   // 24 hours for analyst data (changes infrequently)
 const COMPANY_PROFILE_CACHE_TTL = 86400000; // 24 hours for company profile (rarely changes)
 const COMPANY_NEWS_CACHE_TTL = 900000; // 15 minutes for news
-const EARNINGS_CACHE_TTL = 3600000; // 1 hour for earnings data
+const EARNINGS_CACHE_TTL = 43200000; // 12 hours for earnings data (dates don't change often)
+
+// =====================
+// FINNHUB RATE LIMITER
+// =====================
+// Finnhub free tier: 60 calls/minute = 1 call/second
+// We make 2 Finnhub calls per stock (analyst + earnings), so limit to 1 call per 1.2 seconds
+const FINNHUB_MIN_INTERVAL = 1200; // 1.2 seconds between Finnhub API calls
+let lastFinnhubCall = 0;
+
+async function finnhubRateLimitedFetch(url) {
+  const now = Date.now();
+  const timeSinceLastCall = now - lastFinnhubCall;
+
+  if (timeSinceLastCall < FINNHUB_MIN_INTERVAL) {
+    await new Promise(resolve => setTimeout(resolve, FINNHUB_MIN_INTERVAL - timeSinceLastCall));
+  }
+
+  lastFinnhubCall = Date.now();
+  return fetch(url);
+}
 
 // =====================
 // BROKER FEES & TAX (Israel - IBI Style)
@@ -1184,8 +1204,8 @@ async function fetchAnalystRatings(symbol) {
   }
 
   try {
-    // Fetch recommendation trends
-    const recResponse = await fetch(
+    // Fetch recommendation trends (rate limited)
+    const recResponse = await finnhubRateLimitedFetch(
       `${FINNHUB_BASE_URL}/stock/recommendation?symbol=${upperSymbol}&token=${FINNHUB_API_KEY}`
     );
 
@@ -1195,8 +1215,8 @@ async function fetchAnalystRatings(symbol) {
 
     const recommendations = await recResponse.json();
 
-    // Fetch price target
-    const targetResponse = await fetch(
+    // Fetch price target (rate limited)
+    const targetResponse = await finnhubRateLimitedFetch(
       `${FINNHUB_BASE_URL}/stock/price-target?symbol=${upperSymbol}&token=${FINNHUB_API_KEY}`
     );
 
@@ -1278,7 +1298,7 @@ async function fetchCompanyProfile(symbol) {
   }
 
   try {
-    const response = await fetch(
+    const response = await finnhubRateLimitedFetch(
       `${FINNHUB_BASE_URL}/stock/profile2?symbol=${upperSymbol}&token=${FINNHUB_API_KEY}`
     );
 
@@ -1335,7 +1355,7 @@ async function fetchCompanyNews(symbol, limit = 3) {
     const toDate = new Date().toISOString().split('T')[0];
     const fromDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-    const response = await fetch(
+    const response = await finnhubRateLimitedFetch(
       `${FINNHUB_BASE_URL}/company-news?symbol=${upperSymbol}&from=${fromDate}&to=${toDate}&token=${FINNHUB_API_KEY}`
     );
 
@@ -1388,7 +1408,7 @@ async function fetchEarningsCalendar(symbol) {
     const fromDate = new Date().toISOString().split('T')[0];
     const toDate = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-    const response = await fetch(
+    const response = await finnhubRateLimitedFetch(
       `${FINNHUB_BASE_URL}/calendar/earnings?symbol=${upperSymbol}&from=${fromDate}&to=${toDate}&token=${FINNHUB_API_KEY}`
     );
 
