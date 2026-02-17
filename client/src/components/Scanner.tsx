@@ -139,6 +139,61 @@ const educationalTexts = {
   }
 };
 
+// ==========================================
+// WARNING EXPLANATIONS (Hebrew)
+// ==========================================
+function getWarningExplanation(warning: string): string | null {
+  // High Volatility
+  if (warning.includes('HIGH VOLATILITY') || warning.includes('volatility')) {
+    return 'רכבת הרים: המניה קופצנית מאוד (מעל 3%). זה מגדיל את הסיכון שהיא תיגע בסטופ-לוס שלך בתנודה מקרית.';
+  }
+  // Earnings Risk (<48h) - Critical
+  if (warning.includes('CRITICAL') && warning.includes('Earnings')) {
+    return 'שדה מוקשים: החברה מדווחת תוך פחות מ-48 שעות. זהו הימור מסוכן כי המניה יכולה לזנק או להתרסק ללא קשר לגרף.';
+  }
+  // Earnings Caution (3-7 days)
+  if (warning.includes('EARNINGS SOON') || (warning.includes('Earnings in') && !warning.includes('CRITICAL'))) {
+    return 'זהירות - דוחות בקרוב: המוסדיים מתחילים לבצע התאמות לקראת הדו"ח, מה שיוצר תנודתיות לא צפויה.';
+  }
+  // RSI Overbought
+  if (warning.includes('OVERBOUGHT') || warning.includes('RSI') && warning.includes('70')) {
+    return 'המניה "חמה" מדי: כולם כבר קנו והמחיר מתוח. יש סיכוי גבוה לתיקון למטה כדי "לנשום" לפני המשך עליות.';
+  }
+  // Falling Knife
+  if (warning.includes('FALLING KNIFE') || warning.includes('consecutive down days')) {
+    return 'סכין נופלת: המניה בירידה חדה מדי. מסוכן לנסות לתפוס אותה לפני שנראה סימני בלימה אמיתיים.';
+  }
+  // Death Cross
+  if (warning.includes('DEATH CROSS')) {
+    return 'צלב מוות: הממוצע הקצר צנח מתחת לממוצע הארוך - סימן למגמת ירידה. עדיף לחכות לשיפור במגמה.';
+  }
+  // Bull Trap
+  if (warning.includes('BULL TRAP')) {
+    return 'מלכודת שוורים: העלייה עלולה להיות מטעה. יש סימנים שמצביעים על חולשה מוסתרת.';
+  }
+  // Bearish Divergence
+  if (warning.includes('BEARISH DIVERGENCE')) {
+    return 'דיברגנציה שלילית: המחיר עולה אבל המומנטום נחלש - סימן אזהרה שהעלייה עלולה להיגמר.';
+  }
+  // Extended / Price Extended
+  if (warning.includes('EXTENSION') || warning.includes('EXTENDED') || warning.includes('above SMA50')) {
+    return 'מתיחת יתר: המניה רחוקה מדי מהממוצע. סביר שתחזור לממוצע לפני שתמשיך לעלות.';
+  }
+  // Weak Breakout
+  if (warning.includes('WEAK BREAKOUT')) {
+    return 'פריצה חלשה: הפריצה לא מלווה בנפח או מומנטום מספק - יש סיכון שתיכשל.';
+  }
+  // Data stale
+  if (warning.includes('stale') || warning.includes('Data may be')) {
+    return 'הנתונים עשויים להיות לא עדכניים. רענן את הדף לקבלת נתונים חדשים.';
+  }
+  // No real-time data
+  if (warning.includes('No real-time data')) {
+    return 'אין נתונים בזמן אמת - השוק סגור או יש בעיה בחיבור.';
+  }
+  return null;
+}
+
 // Generate Hebrew reasoning
 function generateHebrewReasoning(stock: StockAnalysis): string {
   const parts: string[] = [];
@@ -450,13 +505,23 @@ function ExpandedRowDetail({ stock, isRTL }: { stock: StockAnalysis; isRTL: bool
             <span>⚠️</span> {isRTL ? 'אזהרות בטיחות' : 'Safety Warnings'}
           </h4>
           {battlePlan.warnings && battlePlan.warnings.length > 0 ? (
-            <ul className="space-y-2 text-sm">
-              {battlePlan.warnings.map((warning, idx) => (
-                <li key={idx} className="text-yellow-400 flex items-start gap-2">
-                  <span className="mt-0.5">•</span>
-                  <span>{warning}</span>
-                </li>
-              ))}
+            <ul className="space-y-3 text-sm">
+              {battlePlan.warnings.map((warning, idx) => {
+                const explanation = isRTL ? getWarningExplanation(warning) : null;
+                return (
+                  <li key={idx} className="flex flex-col gap-1">
+                    <div className="text-yellow-400 flex items-start gap-2">
+                      <span className="mt-0.5">•</span>
+                      <span>{warning}</span>
+                    </div>
+                    {explanation && (
+                      <p className="text-gray-400 text-xs leading-relaxed mr-4 pr-2 border-r-2 border-gray-600">
+                        {explanation}
+                      </p>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           ) : (
             <p className="text-green-400 text-sm flex items-center gap-2">
@@ -465,39 +530,81 @@ function ExpandedRowDetail({ stock, isRTL }: { stock: StockAnalysis; isRTL: bool
           )}
 
           {/* False Positive Indicators */}
-          <div className="mt-4 pt-3 border-t border-gray-700/50 space-y-2 text-sm">
+          <div className="mt-4 pt-3 border-t border-gray-700/50 space-y-3 text-sm">
             <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">
               {isRTL ? 'מניעת חיובי שווא' : 'False Positive Prevention'}
             </p>
             {safetyData.isBullTrap && (
-              <div className="text-orange-400 flex items-center gap-2">
-                <span>🪤</span> {isRTL ? 'מלכודת שוורים' : 'Bull Trap'} ({safetyData.bullTrapRiskLevel})
+              <div className="flex flex-col gap-1">
+                <div className="text-orange-400 flex items-center gap-2">
+                  <span>🪤</span> {isRTL ? 'מלכודת שוורים' : 'Bull Trap'} ({safetyData.bullTrapRiskLevel})
+                </div>
+                {isRTL && (
+                  <p className="text-gray-400 text-xs leading-relaxed mr-6">
+                    העלייה עלולה להיות מטעה. יש סימנים שמצביעים על חולשה מוסתרת.
+                  </p>
+                )}
               </div>
             )}
             {safetyData.hasBearishDivergence && (
-              <div className="text-orange-400 flex items-center gap-2">
-                <span>📉</span> {isRTL ? 'דיברגנציה דובית' : 'Bearish Divergence'}
+              <div className="flex flex-col gap-1">
+                <div className="text-orange-400 flex items-center gap-2">
+                  <span>📉</span> {isRTL ? 'דיברגנציה דובית' : 'Bearish Divergence'}
+                </div>
+                {isRTL && (
+                  <p className="text-gray-400 text-xs leading-relaxed mr-6">
+                    המחיר עולה אבל המומנטום נחלש - סימן אזהרה שהעלייה עלולה להיגמר.
+                  </p>
+                )}
               </div>
             )}
             {safetyData.isExtended && (
-              <div className="text-orange-400 flex items-center gap-2">
-                <span>📏</span> {isRTL ? 'מתוח' : 'Extended'} ({safetyData.extensionPercent}%)
+              <div className="flex flex-col gap-1">
+                <div className="text-orange-400 flex items-center gap-2">
+                  <span>📏</span> {isRTL ? 'מתוח' : 'Extended'} ({safetyData.extensionPercent}%)
+                </div>
+                {isRTL && (
+                  <p className="text-gray-400 text-xs leading-relaxed mr-6">
+                    המניה רחוקה מדי מהממוצע. סביר שתחזור לממוצע לפני שתמשיך לעלות.
+                  </p>
+                )}
               </div>
             )}
             {safetyData.isOverboughtExtreme && (
-              <div className="text-red-400 flex items-center gap-2">
-                <span>🔥</span> {isRTL ? 'קניית יתר קיצונית' : 'Overbought Extreme'}
+              <div className="flex flex-col gap-1">
+                <div className="text-red-400 flex items-center gap-2">
+                  <span>🔥</span> {isRTL ? 'קניית יתר קיצונית' : 'Overbought Extreme'}
+                </div>
+                {isRTL && (
+                  <p className="text-gray-400 text-xs leading-relaxed mr-6">
+                    המניה "חמה" מדי: כולם כבר קנו והמחיר מתוח. יש סיכוי גבוה לתיקון למטה.
+                  </p>
+                )}
               </div>
             )}
             {safetyData.isWeakBreakout && (
-              <div className="text-orange-400 flex items-center gap-2">
-                <span>💨</span> {isRTL ? 'פריצה חלשה' : 'Weak Breakout'}
+              <div className="flex flex-col gap-1">
+                <div className="text-orange-400 flex items-center gap-2">
+                  <span>💨</span> {isRTL ? 'פריצה חלשה' : 'Weak Breakout'}
+                </div>
+                {isRTL && (
+                  <p className="text-gray-400 text-xs leading-relaxed mr-6">
+                    הפריצה לא מלווה בנפח או מומנטום מספק - יש סיכון שתיכשל.
+                  </p>
+                )}
               </div>
             )}
             {!safetyData.isBullTrap && !safetyData.hasBearishDivergence && !safetyData.isExtended &&
              !safetyData.isOverboughtExtreme && !safetyData.isWeakBreakout && (
-              <div className="text-green-400 flex items-center gap-2">
-                <span>✅</span> {isRTL ? 'עבר את כל הבדיקות' : 'All checks passed'}
+              <div className="flex flex-col gap-1">
+                <div className="text-green-400 flex items-center gap-2">
+                  <span>✅</span> {isRTL ? 'עבר את כל הבדיקות' : 'All checks passed'}
+                </div>
+                {isRTL && (
+                  <p className="text-gray-400 text-xs leading-relaxed mr-6">
+                    המערכת וידאה שהאיתות אינו מקרי ונובע ממגמה אמיתית.
+                  </p>
+                )}
               </div>
             )}
           </div>

@@ -73,6 +73,47 @@ function formatNewsDate(timestamp: number): string {
   return date.toLocaleDateString('he-IL', { day: 'numeric', month: 'short' });
 }
 
+// Warning explanations in Hebrew
+function getWarningExplanation(warning: string): string | null {
+  if (warning.includes('HIGH VOLATILITY') || warning.includes('volatility')) {
+    return 'רכבת הרים: המניה קופצנית מאוד (מעל 3%). זה מגדיל את הסיכון שהיא תיגע בסטופ-לוס שלך בתנודה מקרית.';
+  }
+  if (warning.includes('CRITICAL') && warning.includes('Earnings')) {
+    return 'שדה מוקשים: החברה מדווחת תוך פחות מ-48 שעות. זהו הימור מסוכן כי המניה יכולה לזנק או להתרסק ללא קשר לגרף.';
+  }
+  if (warning.includes('EARNINGS SOON') || (warning.includes('Earnings in') && !warning.includes('CRITICAL'))) {
+    return 'זהירות - דוחות בקרוב: המוסדיים מתחילים לבצע התאמות לקראת הדו"ח, מה שיוצר תנודתיות לא צפויה.';
+  }
+  if (warning.includes('OVERBOUGHT') || warning.includes('RSI') && warning.includes('70')) {
+    return 'המניה "חמה" מדי: כולם כבר קנו והמחיר מתוח. יש סיכוי גבוה לתיקון למטה כדי "לנשום" לפני המשך עליות.';
+  }
+  if (warning.includes('FALLING KNIFE') || warning.includes('consecutive down days')) {
+    return 'סכין נופלת: המניה בירידה חדה מדי. מסוכן לנסות לתפוס אותה לפני שנראה סימני בלימה אמיתיים.';
+  }
+  if (warning.includes('DEATH CROSS')) {
+    return 'צלב מוות: הממוצע הקצר צנח מתחת לממוצע הארוך - סימן למגמת ירידה. עדיף לחכות לשיפור במגמה.';
+  }
+  if (warning.includes('BULL TRAP')) {
+    return 'מלכודת שוורים: העלייה עלולה להיות מטעה. יש סימנים שמצביעים על חולשה מוסתרת.';
+  }
+  if (warning.includes('BEARISH DIVERGENCE')) {
+    return 'דיברגנציה שלילית: המחיר עולה אבל המומנטום נחלש - סימן אזהרה שהעלייה עלולה להיגמר.';
+  }
+  if (warning.includes('EXTENSION') || warning.includes('EXTENDED') || warning.includes('above SMA50')) {
+    return 'מתיחת יתר: המניה רחוקה מדי מהממוצע. סביר שתחזור לממוצע לפני שתמשיך לעלות.';
+  }
+  if (warning.includes('WEAK BREAKOUT')) {
+    return 'פריצה חלשה: הפריצה לא מלווה בנפח או מומנטום מספק - יש סיכון שתיכשל.';
+  }
+  if (warning.includes('stale') || warning.includes('Data may be')) {
+    return 'הנתונים עשויים להיות לא עדכניים. רענן את הדף לקבלת נתונים חדשים.';
+  }
+  if (warning.includes('No real-time data')) {
+    return 'אין נתונים בזמן אמת - השוק סגור או יש בעיה בחיבור.';
+  }
+  return null;
+}
+
 // Tooltip component with info icon
 function InfoTooltip({ text }: { text: string }) {
   const [show, setShow] = useState(false);
@@ -721,13 +762,23 @@ export default function AnalysisModal({ symbol, onClose }: AnalysisModalProps) {
                   <h4 className="text-sm font-semibold text-amber-400 mb-3 flex items-center gap-2">
                     <span>⚠️</span> אזהרות חשובות
                   </h4>
-                  <ul className="space-y-2">
-                    {analysis.battlePlan.warnings.map((warning, i) => (
-                      <li key={i} className="text-sm text-amber-300/80 flex items-start gap-2">
-                        <span className="text-amber-400 mt-1">•</span>
-                        <span>{warning}</span>
-                      </li>
-                    ))}
+                  <ul className="space-y-3">
+                    {analysis.battlePlan.warnings.map((warning, i) => {
+                      const explanation = getWarningExplanation(warning);
+                      return (
+                        <li key={i} className="flex flex-col gap-1">
+                          <div className="text-sm text-amber-300/80 flex items-start gap-2">
+                            <span className="text-amber-400 mt-1">•</span>
+                            <span>{warning}</span>
+                          </div>
+                          {explanation && (
+                            <p className="text-gray-400 text-xs leading-relaxed mr-4 pr-2 border-r-2 border-amber-500/30">
+                              {explanation}
+                            </p>
+                          )}
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
               )}
