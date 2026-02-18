@@ -1,123 +1,112 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { db } from './firestore.js';
+import { FieldValue } from 'firebase-admin/firestore';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dbPath = path.join(__dirname, 'data.json');
+// Collection references
+const portfolioRef = db.collection('portfolio').doc('main');
+const holdingsRef = db.collection('holdings');
+const tradesRef = db.collection('trades');
+const watchlistRef = db.collection('watchlist').doc('symbols');
+const alertsRef = db.collection('alerts');
 
-// Default database structure
-const defaultData = {
-  portfolio: {
-    cash: 100000,
-    totalCommissionsPaid: 0,  // Cumulative broker fees
-    totalTaxesPaid: 0,        // Cumulative capital gains tax
-    totalRealizedPL: 0,       // Cumulative realized P&L (before tax)
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  holdings: [],
-  trades: [],
-  watchlist: [],
-  alerts: [] // For triggered auto-exits
+// Default portfolio data (used for initialization/reset)
+const defaultPortfolio = {
+  cash: 100000,
+  totalCommissionsPaid: 0,
+  totalTaxesPaid: 0,
+  totalRealizedPL: 0,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString()
 };
 
-// Load database from file
-function loadDb() {
-  try {
-    if (fs.existsSync(dbPath)) {
-      const data = fs.readFileSync(dbPath, 'utf-8');
-      return JSON.parse(data);
-    }
-  } catch (error) {
-    console.error('Error loading database:', error.message);
+// ---- Portfolio Functions ----
+
+export async function getPortfolio() {
+  const doc = await portfolioRef.get();
+  if (!doc.exists) {
+    await portfolioRef.set(defaultPortfolio);
+    return { ...defaultPortfolio };
   }
-  return { ...defaultData };
+  return doc.data();
 }
 
-// Save database to file
-function saveDb(data) {
-  try {
-    fs.writeFileSync(dbPath, JSON.stringify(data, null, 2));
-  } catch (error) {
-    console.error('Error saving database:', error.message);
-  }
+export async function updateCash(newCash) {
+  await portfolioRef.update({
+    cash: newCash,
+    updatedAt: new Date().toISOString()
+  });
+  return getPortfolio();
 }
 
-// Initialize database
-let db = loadDb();
-
-// Portfolio functions
-export function getPortfolio() {
-  return db.portfolio;
+export async function addCommission(amount) {
+  await portfolioRef.update({
+    totalCommissionsPaid: FieldValue.increment(amount),
+    updatedAt: new Date().toISOString()
+  });
+  const portfolio = await getPortfolio();
+  return portfolio.totalCommissionsPaid;
 }
 
-export function updateCash(newCash) {
-  db.portfolio.cash = newCash;
-  db.portfolio.updatedAt = new Date().toISOString();
-  saveDb(db);
-  return db.portfolio;
+export async function addTax(amount) {
+  await portfolioRef.update({
+    totalTaxesPaid: FieldValue.increment(amount),
+    updatedAt: new Date().toISOString()
+  });
+  const portfolio = await getPortfolio();
+  return portfolio.totalTaxesPaid;
 }
 
-// Update cumulative fees and taxes
-export function addCommission(amount) {
-  db.portfolio.totalCommissionsPaid = (db.portfolio.totalCommissionsPaid || 0) + amount;
-  db.portfolio.updatedAt = new Date().toISOString();
-  saveDb(db);
-  return db.portfolio.totalCommissionsPaid;
+export async function addRealizedPL(amount) {
+  await portfolioRef.update({
+    totalRealizedPL: FieldValue.increment(amount),
+    updatedAt: new Date().toISOString()
+  });
+  const portfolio = await getPortfolio();
+  return portfolio.totalRealizedPL;
 }
 
-export function addTax(amount) {
-  db.portfolio.totalTaxesPaid = (db.portfolio.totalTaxesPaid || 0) + amount;
-  db.portfolio.updatedAt = new Date().toISOString();
-  saveDb(db);
-  return db.portfolio.totalTaxesPaid;
-}
-
-export function addRealizedPL(amount) {
-  db.portfolio.totalRealizedPL = (db.portfolio.totalRealizedPL || 0) + amount;
-  db.portfolio.updatedAt = new Date().toISOString();
-  saveDb(db);
-  return db.portfolio.totalRealizedPL;
-}
-
-// Get cumulative fee/tax summary
-export function getFeesSummary() {
+export async function getFeesSummary() {
+  const portfolio = await getPortfolio();
   return {
-    totalCommissionsPaid: db.portfolio.totalCommissionsPaid || 0,
-    totalTaxesPaid: db.portfolio.totalTaxesPaid || 0,
-    totalRealizedPL: db.portfolio.totalRealizedPL || 0,
-    totalCosts: (db.portfolio.totalCommissionsPaid || 0) + (db.portfolio.totalTaxesPaid || 0)
+    totalCommissionsPaid: portfolio.totalCommissionsPaid || 0,
+    totalTaxesPaid: portfolio.totalTaxesPaid || 0,
+    totalRealizedPL: portfolio.totalRealizedPL || 0,
+    totalCosts: (portfolio.totalCommissionsPaid || 0) + (portfolio.totalTaxesPaid || 0)
   };
 }
 
-// Holdings functions
-export function getHoldings() {
-  return db.holdings.sort((a, b) => a.symbol.localeCompare(b.symbol));
+// ---- Holdings Functions ----
+
+export async function getHoldings() {
+  const snapshot = await holdingsRef.orderBy('symbol').get();
+  return snapshot.docs.map(doc => doc.data());
 }
 
-export function getHolding(symbol) {
-  return db.holdings.find(h => h.symbol === symbol.toUpperCase());
+export async function getHolding(symbol) {
+  const doc = await holdingsRef.doc(symbol.toUpperCase()).get();
+  return doc.exists ? doc.data() : undefined;
 }
 
-export function upsertHolding(symbol, shares, avgCost, takeProfit = null, stopLoss = null) {
+export async function upsertHolding(symbol, shares, avgCost, takeProfit = null, stopLoss = null) {
   const upperSymbol = symbol.toUpperCase();
+  const docRef = holdingsRef.doc(upperSymbol);
 
   if (shares <= 0) {
-    db.holdings = db.holdings.filter(h => h.symbol !== upperSymbol);
-    saveDb(db);
+    await docRef.delete();
     return null;
   }
 
-  const existing = db.holdings.find(h => h.symbol === upperSymbol);
-  if (existing) {
-    existing.shares = shares;
-    existing.avg_cost = avgCost;
-    // Only update TP/SL if provided
-    if (takeProfit !== null) existing.take_profit = takeProfit;
-    if (stopLoss !== null) existing.stop_loss = stopLoss;
-    existing.updatedAt = new Date().toISOString();
+  const existing = await docRef.get();
+  if (existing.exists) {
+    const updateData = {
+      shares,
+      avg_cost: avgCost,
+      updatedAt: new Date().toISOString()
+    };
+    if (takeProfit !== null) updateData.take_profit = takeProfit;
+    if (stopLoss !== null) updateData.stop_loss = stopLoss;
+    await docRef.update(updateData);
   } else {
-    db.holdings.push({
+    await docRef.set({
       id: Date.now(),
       symbol: upperSymbol,
       shares,
@@ -129,109 +118,147 @@ export function upsertHolding(symbol, shares, avgCost, takeProfit = null, stopLo
     });
   }
 
-  saveDb(db);
   return getHolding(upperSymbol);
 }
 
-export function deleteHolding(symbol) {
-  db.holdings = db.holdings.filter(h => h.symbol !== symbol.toUpperCase());
-  saveDb(db);
+export async function deleteHolding(symbol) {
+  await holdingsRef.doc(symbol.toUpperCase()).delete();
 }
 
-// Trade history functions
-export function getTrades(limit = 100) {
-  return db.trades
-    .sort((a, b) => new Date(b.executed_at).getTime() - new Date(a.executed_at).getTime())
-    .slice(0, limit);
+// ---- Trade History Functions ----
+
+export async function getTrades(limit = 100) {
+  const snapshot = await tradesRef
+    .orderBy('executed_at', 'desc')
+    .limit(limit)
+    .get();
+  return snapshot.docs.map(doc => doc.data());
 }
 
-export function addTrade(trade) {
-  db.trades.push({
+export async function addTrade(trade) {
+  const tradeData = {
     ...trade,
     executed_at: new Date().toISOString()
-  });
-  saveDb(db);
+  };
+  await tradesRef.add(tradeData);
   return trade;
 }
 
-// Watchlist functions
-export function getWatchlist() {
-  return db.watchlist.sort();
+// ---- Watchlist Functions ----
+
+export async function getWatchlist() {
+  const doc = await watchlistRef.get();
+  if (!doc.exists) {
+    return [];
+  }
+  return (doc.data().symbols || []).sort();
 }
 
-export function addToWatchlist(symbol) {
+export async function addToWatchlist(symbol) {
   const upperSymbol = symbol.toUpperCase();
-  if (!db.watchlist.includes(upperSymbol)) {
-    db.watchlist.push(upperSymbol);
-    saveDb(db);
-  }
+  await watchlistRef.set(
+    { symbols: FieldValue.arrayUnion(upperSymbol) },
+    { merge: true }
+  );
   return true;
 }
 
-export function removeFromWatchlist(symbol) {
-  db.watchlist = db.watchlist.filter(s => s !== symbol.toUpperCase());
-  saveDb(db);
+export async function removeFromWatchlist(symbol) {
+  const doc = await watchlistRef.get();
+  if (!doc.exists) return;
+  await watchlistRef.update({
+    symbols: FieldValue.arrayRemove(symbol.toUpperCase())
+  });
 }
 
-// Alert functions for auto-exit notifications
-export function getAlerts(includeRead = false) {
+// ---- Alert Functions ----
+
+export async function getAlerts(includeRead = false) {
+  let query;
   if (includeRead) {
-    return db.alerts.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    query = alertsRef.orderBy('created_at', 'desc');
+  } else {
+    query = alertsRef.where('read', '==', false).orderBy('created_at', 'desc');
   }
-  return db.alerts
-    .filter(a => !a.read)
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const snapshot = await query.get();
+  return snapshot.docs.map(doc => doc.data());
 }
 
-export function addAlert(alert) {
+export async function addAlert(alert) {
   const newAlert = {
     id: Date.now(),
     ...alert,
     read: false,
     created_at: new Date().toISOString()
   };
-  db.alerts.push(newAlert);
-  saveDb(db);
+  await alertsRef.add(newAlert);
   return newAlert;
 }
 
-export function markAlertRead(alertId) {
-  const alert = db.alerts.find(a => a.id === alertId);
-  if (alert) {
-    alert.read = true;
-    saveDb(db);
-  }
-  return alert;
+export async function markAlertRead(alertId) {
+  const snapshot = await alertsRef.where('id', '==', alertId).get();
+  if (snapshot.empty) return null;
+  const doc = snapshot.docs[0];
+  await doc.ref.update({ read: true });
+  return { ...doc.data(), read: true };
 }
 
-export function markAllAlertsRead() {
-  db.alerts.forEach(a => a.read = true);
-  saveDb(db);
+export async function markAllAlertsRead() {
+  const snapshot = await alertsRef.where('read', '==', false).get();
+  if (snapshot.empty) return;
+  const batch = db.batch();
+  snapshot.docs.forEach(doc => {
+    batch.update(doc.ref, { read: true });
+  });
+  await batch.commit();
 }
 
-export function clearAlerts() {
-  db.alerts = [];
-  saveDb(db);
+export async function clearAlerts() {
+  const snapshot = await alertsRef.get();
+  if (snapshot.empty) return;
+  const batch = db.batch();
+  snapshot.docs.forEach(doc => {
+    batch.delete(doc.ref);
+  });
+  await batch.commit();
 }
 
-// Reset portfolio to initial state
-export function resetPortfolio() {
-  db = {
-    portfolio: {
-      cash: 100000,
-      totalCommissionsPaid: 0,
-      totalTaxesPaid: 0,
-      totalRealizedPL: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    },
-    holdings: [],
-    trades: [],
-    watchlist: db.watchlist, // Keep watchlist
-    alerts: [] // Clear alerts
+// ---- Reset ----
+
+export async function resetPortfolio() {
+  const newPortfolio = {
+    cash: 100000,
+    totalCommissionsPaid: 0,
+    totalTaxesPaid: 0,
+    totalRealizedPL: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   };
-  saveDb(db);
-  return db.portfolio;
-}
+  await portfolioRef.set(newPortfolio);
 
-export default db;
+  // Delete all holdings
+  const holdingsSnap = await holdingsRef.get();
+  if (!holdingsSnap.empty) {
+    const batch1 = db.batch();
+    holdingsSnap.docs.forEach(doc => batch1.delete(doc.ref));
+    await batch1.commit();
+  }
+
+  // Delete all trades
+  const tradesSnap = await tradesRef.get();
+  if (!tradesSnap.empty) {
+    const batch2 = db.batch();
+    tradesSnap.docs.forEach(doc => batch2.delete(doc.ref));
+    await batch2.commit();
+  }
+
+  // Delete all alerts (keep watchlist as original code does)
+  const alertsSnap = await alertsRef.get();
+  if (!alertsSnap.empty) {
+    const batch3 = db.batch();
+    alertsSnap.docs.forEach(doc => batch3.delete(doc.ref));
+    await batch3.commit();
+  }
+
+  return newPortfolio;
+}

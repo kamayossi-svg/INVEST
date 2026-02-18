@@ -58,7 +58,7 @@ app.use(express.static(clientBuildPath));
 // Scan market for trading opportunities
 app.get('/api/market/scan', async (req, res) => {
   try {
-    const watchlist = getWatchlist();
+    const watchlist = await getWatchlist();
     const symbols = watchlist.length > 0 ? watchlist : DEFAULT_STOCKS;
     const results = await scanMarket(symbols);
     res.json({ success: true, data: results, timestamp: Date.now() });
@@ -147,8 +147,8 @@ app.get('/api/market/company/:symbol', async (req, res) => {
 // Get portfolio summary
 app.get('/api/portfolio', async (req, res) => {
   try {
-    const portfolio = getPortfolio();
-    const holdings = getHoldings();
+    const portfolio = await getPortfolio();
+    const holdings = await getHoldings();
 
     // Get current prices for holdings
     if (holdings.length > 0) {
@@ -182,7 +182,7 @@ app.get('/api/portfolio', async (req, res) => {
       const totalUnrealizedPL = totalMarketValue - totalCostBasis;
       const totalEquity = portfolio.cash + totalMarketValue;
 
-      const feesSummary = getFeesSummary();
+      const feesSummary = await getFeesSummary();
       res.json({
         success: true,
         data: {
@@ -198,7 +198,7 @@ app.get('/api/portfolio', async (req, res) => {
         }
       });
     } else {
-      const feesSummary = getFeesSummary();
+      const feesSummary = await getFeesSummary();
       res.json({
         success: true,
         data: {
@@ -221,10 +221,10 @@ app.get('/api/portfolio', async (req, res) => {
 });
 
 // Get trade history
-app.get('/api/portfolio/trades', (req, res) => {
+app.get('/api/portfolio/trades', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 100;
-    const trades = getTrades(limit);
+    const trades = await getTrades(limit);
     res.json({ success: true, data: trades });
   } catch (error) {
     console.error('Trades error:', error);
@@ -233,9 +233,9 @@ app.get('/api/portfolio/trades', (req, res) => {
 });
 
 // Reset portfolio
-app.post('/api/portfolio/reset', (req, res) => {
+app.post('/api/portfolio/reset', async (req, res) => {
   try {
-    const portfolio = resetPortfolio();
+    const portfolio = await resetPortfolio();
     res.json({
       success: true,
       data: {
@@ -284,7 +284,7 @@ app.post('/api/trade/buy', async (req, res) => {
     const commission = Math.max(MIN_COMMISSION, total * 0.001);
 
     // Check if user has enough cash (including commission)
-    const portfolio = getPortfolio();
+    const portfolio = await getPortfolio();
     const totalWithCommission = total + commission;
     if (portfolio.cash < totalWithCommission) {
       return res.status(400).json({
@@ -298,13 +298,13 @@ app.post('/api/trade/buy', async (req, res) => {
     const stopLoss = requestedStopLoss || price * 0.96;
 
     // Update cash (deduct trade amount + commission)
-    updateCash(portfolio.cash - totalWithCommission);
+    await updateCash(portfolio.cash - totalWithCommission);
 
     // Track commission
-    addCommission(commission);
+    await addCommission(commission);
 
     // Update holdings (calculate new average cost if adding to position)
-    const existingHolding = getHolding(symbol.toUpperCase());
+    const existingHolding = await getHolding(symbol.toUpperCase());
     let newShares, newAvgCost;
 
     if (existingHolding) {
@@ -318,7 +318,7 @@ app.post('/api/trade/buy', async (req, res) => {
     }
 
     // Store holding with TP/SL for automatic monitoring
-    upsertHolding(symbol.toUpperCase(), newShares, newAvgCost, takeProfit, stopLoss);
+    await upsertHolding(symbol.toUpperCase(), newShares, newAvgCost, takeProfit, stopLoss);
 
     // Record trade with commission
     const trade = {
@@ -332,7 +332,7 @@ app.post('/api/trade/buy', async (req, res) => {
       take_profit: takeProfit,
       stop_loss: stopLoss
     };
-    addTrade(trade);
+    await addTrade(trade);
 
     res.json({
       success: true,
@@ -367,7 +367,7 @@ app.post('/api/trade/sell', async (req, res) => {
     }
 
     // Check if user has the holding
-    const holding = getHolding(symbol.toUpperCase());
+    const holding = await getHolding(symbol.toUpperCase());
     if (!holding) {
       return res.status(400).json({
         success: false,
@@ -409,19 +409,19 @@ app.post('/api/trade/sell', async (req, res) => {
     const netProceeds = total - commission - taxAmount;
 
     // Update cash (add net proceeds)
-    const portfolio = getPortfolio();
-    updateCash(portfolio.cash + netProceeds);
+    const portfolio = await getPortfolio();
+    await updateCash(portfolio.cash + netProceeds);
 
     // Track commission and tax
-    addCommission(commission);
+    await addCommission(commission);
     if (taxAmount > 0) {
-      addTax(taxAmount);
+      await addTax(taxAmount);
     }
-    addRealizedPL(grossPL);
+    await addRealizedPL(grossPL);
 
     // Update holdings
     const newShares = holding.shares - shares;
-    upsertHolding(symbol.toUpperCase(), newShares, holding.avg_cost);
+    await upsertHolding(symbol.toUpperCase(), newShares, holding.avg_cost);
 
     // Calculate net realized P&L (after fees and tax)
     const netRealizedPL = grossPL - commission - taxAmount;
@@ -440,7 +440,7 @@ app.post('/api/trade/sell', async (req, res) => {
       grossPL,
       netRealizedPL
     };
-    addTrade(trade);
+    await addTrade(trade);
 
     res.json({
       success: true,
@@ -466,9 +466,9 @@ app.post('/api/trade/sell', async (req, res) => {
 // =====================
 
 // Get watchlist
-app.get('/api/watchlist', (req, res) => {
+app.get('/api/watchlist', async (req, res) => {
   try {
-    const watchlist = getWatchlist();
+    const watchlist = await getWatchlist();
     res.json({ success: true, data: watchlist });
   } catch (error) {
     console.error('Watchlist error:', error);
@@ -477,14 +477,14 @@ app.get('/api/watchlist', (req, res) => {
 });
 
 // Add to watchlist
-app.post('/api/watchlist', (req, res) => {
+app.post('/api/watchlist', async (req, res) => {
   try {
     const { symbol } = req.body;
     if (!symbol) {
       return res.status(400).json({ success: false, error: 'Symbol required' });
     }
-    addToWatchlist(symbol);
-    res.json({ success: true, data: getWatchlist() });
+    await addToWatchlist(symbol);
+    res.json({ success: true, data: await getWatchlist() });
   } catch (error) {
     console.error('Watchlist add error:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -492,11 +492,11 @@ app.post('/api/watchlist', (req, res) => {
 });
 
 // Remove from watchlist
-app.delete('/api/watchlist/:symbol', (req, res) => {
+app.delete('/api/watchlist/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
-    removeFromWatchlist(symbol);
-    res.json({ success: true, data: getWatchlist() });
+    await removeFromWatchlist(symbol);
+    res.json({ success: true, data: await getWatchlist() });
   } catch (error) {
     console.error('Watchlist remove error:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -508,10 +508,10 @@ app.delete('/api/watchlist/:symbol', (req, res) => {
 // =====================
 
 // Get all unread alerts
-app.get('/api/alerts', (req, res) => {
+app.get('/api/alerts', async (req, res) => {
   try {
     const includeRead = req.query.all === 'true';
-    const alerts = getAlerts(includeRead);
+    const alerts = await getAlerts(includeRead);
     res.json({ success: true, data: alerts });
   } catch (error) {
     console.error('Alerts error:', error);
@@ -520,10 +520,10 @@ app.get('/api/alerts', (req, res) => {
 });
 
 // Mark a single alert as read
-app.post('/api/alerts/:id/read', (req, res) => {
+app.post('/api/alerts/:id/read', async (req, res) => {
   try {
     const alertId = parseInt(req.params.id);
-    const alert = markAlertRead(alertId);
+    const alert = await markAlertRead(alertId);
     res.json({ success: true, data: alert });
   } catch (error) {
     console.error('Mark alert read error:', error);
@@ -532,9 +532,9 @@ app.post('/api/alerts/:id/read', (req, res) => {
 });
 
 // Mark all alerts as read
-app.post('/api/alerts/read-all', (req, res) => {
+app.post('/api/alerts/read-all', async (req, res) => {
   try {
-    markAllAlertsRead();
+    await markAllAlertsRead();
     res.json({ success: true, message: 'All alerts marked as read' });
   } catch (error) {
     console.error('Mark all alerts read error:', error);

@@ -30,7 +30,7 @@ export async function checkPriceTargets() {
     return;
   }
 
-  const holdings = getHoldings();
+  const holdings = await getHoldings();
 
   if (holdings.length === 0) return;
 
@@ -71,7 +71,7 @@ export async function checkPriceTargets() {
  * Called once on app startup when market is closed
  */
 async function checkRetroactivePriceTargets() {
-  const holdings = getHoldings();
+  const holdings = await getHoldings();
   if (holdings.length === 0) return;
 
   console.log(`\n🔄 Retroactive Check: Reviewing ${holdings.length} positions for missed TP/SL...`);
@@ -110,7 +110,7 @@ async function checkRetroactivePriceTargets() {
  * Execute an automatic exit (sell all shares)
  */
 async function executeAutoExit(holding, exitPrice, exitType) {
-  const portfolio = getPortfolio();
+  const portfolio = await getPortfolio();
   const shares = holding.shares;
   const totalProceeds = shares * exitPrice;
   const costBasis = shares * holding.avg_cost;
@@ -119,13 +119,13 @@ async function executeAutoExit(holding, exitPrice, exitType) {
 
   // Update cash
   const newCash = portfolio.cash + totalProceeds;
-  updateCash(newCash);
+  await updateCash(newCash);
 
   // Remove holding
-  upsertHolding(holding.symbol, 0, 0);
+  await upsertHolding(holding.symbol, 0, 0);
 
   // Record the trade
-  addTrade({
+  await addTrade({
     id: Date.now(),
     symbol: holding.symbol,
     action: 'SELL',
@@ -139,7 +139,7 @@ async function executeAutoExit(holding, exitPrice, exitType) {
 
   // Create alert for user
   const isProfit = exitType === 'TAKE_PROFIT';
-  addAlert({
+  await addAlert({
     type: exitType,
     symbol: holding.symbol,
     shares: shares,

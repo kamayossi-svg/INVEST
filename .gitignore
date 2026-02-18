@@ -27,6 +27,10 @@ npm-debug.log*
 # Database
 server/data.json
 
+# Firebase service account key (NEVER commit this)
+server/serviceAccountKey.json
+serviceAccountKey.json
+
 # Temporary files
 *.tmp
 *.temp
