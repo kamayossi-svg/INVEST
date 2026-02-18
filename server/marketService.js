@@ -434,7 +434,7 @@ function getQuoteCacheTTL() {
 // Requires stocks to appear as BUY_NOW in 2 consecutive scans
 // =====================
 const verdictHistoryCache = new Map(); // Tracks previous scan verdicts
-const VERDICT_HISTORY_TTL = 600000;    // 10 minutes - history expires if no scan in this time
+const VERDICT_HISTORY_TTL = 86400000;  // 24 hours - persists between scans throughout the trading day
 
 /**
  * Check if a stock's BUY_NOW verdict should be confirmed or pending
@@ -456,13 +456,14 @@ function applyHysteresis(symbol, currentVerdict) {
   let isPendingConfirmation = false;
 
   // Hysteresis logic: BUY_NOW requires confirmation from previous scan
+  // BUT: if previous verdict was already BUY_NOW or WATCH (close to buy), confirm immediately
   if (currentVerdict === 'BUY_NOW') {
-    if (previousVerdict === 'BUY_NOW') {
-      // Confirmed! Stock was BUY_NOW in previous scan too
+    if (previousVerdict === 'BUY_NOW' || previousVerdict === 'WATCH' || previousVerdict === 'WAIT_FOR_DIP') {
+      // Confirmed! Stock was already tracked in previous scan
       finalVerdict = 'BUY_NOW';
-      console.log(`[${upperSymbol}] ✅ BUY_NOW CONFIRMED (2nd consecutive scan)`);
+      console.log(`[${upperSymbol}] ✅ BUY_NOW CONFIRMED (previous: ${previousVerdict})`);
     } else {
-      // First time BUY_NOW - downgrade to WATCH pending confirmation
+      // First time seeing this stock - downgrade to WATCH pending confirmation
       finalVerdict = 'WATCH';
       isPendingConfirmation = true;
       console.log(`[${upperSymbol}] ⏳ BUY_NOW PENDING CONFIRMATION (was: ${previousVerdict || 'new'})`);
@@ -2366,7 +2367,11 @@ export async function analyzeStock(symbol) {
       }
     } else {
       // Market is closed: skip hysteresis, use verdicts as-is
-      // Hysteresis is for live trading flickering - doesn't apply when prices aren't changing
+      // But still record the verdict so it's available when market opens
+      verdictHistoryCache.set(symbol.toUpperCase(), {
+        verdict: battlePlan.verdict,
+        timestamp: Date.now()
+      });
       finalBattlePlan = {
         ...battlePlan,
         originalVerdict: battlePlan.verdict,
