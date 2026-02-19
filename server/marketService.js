@@ -283,7 +283,8 @@ const companyNewsCache = new Map();
 const earningsCache = new Map();
 const QUOTE_CACHE_TTL_MARKET_OPEN = 60000;    // 60 seconds when market is open
 const QUOTE_CACHE_TTL_MARKET_CLOSED = Infinity; // Never expire when market is closed
-const HISTORICAL_CACHE_TTL = 300000; // 5 minutes for historical data
+const HISTORICAL_CACHE_TTL_MARKET_OPEN = 300000; // 5 minutes when market is open
+const HISTORICAL_CACHE_TTL_MARKET_CLOSED = Infinity; // Never expire when market is closed
 const ANALYST_CACHE_TTL = 86400000;   // 24 hours for analyst data (changes infrequently)
 const COMPANY_PROFILE_CACHE_TTL = 86400000; // 24 hours for company profile (rarely changes)
 const COMPANY_NEWS_CACHE_TTL = 900000; // 15 minutes for news
@@ -1622,9 +1623,10 @@ export async function getQuotes(symbols) {
 async function fetchHistoricalData(symbol) {
   const upperSymbol = symbol.toUpperCase();
 
-  // Check cache first
+  // Check cache first (never expire when market is closed)
   const cached = historicalCache.get(upperSymbol);
-  if (cached && Date.now() - cached.timestamp < HISTORICAL_CACHE_TTL) {
+  const historicalCacheTTL = isMarketOpen().isOpen ? HISTORICAL_CACHE_TTL_MARKET_OPEN : HISTORICAL_CACHE_TTL_MARKET_CLOSED;
+  if (cached && (historicalCacheTTL === Infinity || Date.now() - cached.timestamp < historicalCacheTTL)) {
     console.log(`[${upperSymbol}] Using cached historical data`);
     return cached.data;
   }
