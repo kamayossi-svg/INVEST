@@ -224,24 +224,31 @@ export async function markAlertRead(alertId) {
   return { ...doc.data(), read: true };
 }
 
+/**
+ * Firestore rejects a batch of more than 500 writes, so every bulk operation
+ * commits in chunks. These used to build one unbounded batch, which meant a
+ * portfolio reset would simply throw once the account had 500 trades.
+ */
+const BATCH_LIMIT = 450;
+
+async function commitInChunks(docs, apply) {
+  for (let i = 0; i < docs.length; i += BATCH_LIMIT) {
+    const batch = db.batch();
+    for (const doc of docs.slice(i, i + BATCH_LIMIT)) apply(batch, doc);
+    await batch.commit();
+  }
+}
+
 export async function markAllAlertsRead() {
   const snapshot = await alertsRef.where('read', '==', false).get();
   if (snapshot.empty) return;
-  const batch = db.batch();
-  snapshot.docs.forEach(doc => {
-    batch.update(doc.ref, { read: true });
-  });
-  await batch.commit();
+  await commitInChunks(snapshot.docs, (batch, doc) => batch.update(doc.ref, { read: true }));
 }
 
 export async function clearAlerts() {
   const snapshot = await alertsRef.get();
   if (snapshot.empty) return;
-  const batch = db.batch();
-  snapshot.docs.forEach(doc => {
-    batch.delete(doc.ref);
-  });
-  await batch.commit();
+  await commitInChunks(snapshot.docs, (batch, doc) => batch.delete(doc.ref));
 }
 
 // ---- Reset ----
@@ -257,29 +264,26 @@ export async function resetPortfolio() {
   };
   await portfolioRef.set(newPortfolio);
 
-  // Delete all holdings
-  const holdingsSnap = await holdingsRef.get();
-  if (!holdingsSnap.empty) {
-    const batch1 = db.batch();
-    holdingsSnap.docs.forEach(doc => batch1.delete(doc.ref));
-    await batch1.commit();
+  // Holdings, trades and alerts are wiped. The watchlist is kept, and so is
+  // the `recommendations` log - that measures the scanner, not the account,
+  // and discarding it would restart the 10-trading-day evaluation clock.
+  const [holdingsSnap, tradesSnap, alertsSnap] = await Promise.all([
+    holdingsRef.get(),
+    tradesRef.get(),
+    alertsRef.get()
+  ]);
+
+  const deleted = {
+    holdings: holdingsSnap.size,
+    trades: tradesSnap.size,
+    alerts: alertsSnap.size
+  };
+
+  for (const snap of [holdingsSnap, tradesSnap, alertsSnap]) {
+    if (!snap.empty) {
+      await commitInChunks(snap.docs, (batch, doc) => batch.delete(doc.ref));
+    }
   }
 
-  // Delete all trades
-  const tradesSnap = await tradesRef.get();
-  if (!tradesSnap.empty) {
-    const batch2 = db.batch();
-    tradesSnap.docs.forEach(doc => batch2.delete(doc.ref));
-    await batch2.commit();
-  }
-
-  // Delete all alerts (keep watchlist as original code does)
-  const alertsSnap = await alertsRef.get();
-  if (!alertsSnap.empty) {
-    const batch3 = db.batch();
-    alertsSnap.docs.forEach(doc => batch3.delete(doc.ref));
-    await batch3.commit();
-  }
-
-  return newPortfolio;
+  return { ...newPortfolio, deleted };
 }

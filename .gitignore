@@ -46,3 +46,6 @@ requirements.txt
 
 # Claude config
 .claude/
+
+# Local data exports (contain portfolio and trade history)
+backups/
