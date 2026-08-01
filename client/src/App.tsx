@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from './firebase/AuthContext';
 import Scanner from './components/Scanner';
 import Portfolio from './components/Portfolio';
 import TradeHistory from './components/TradeHistory';
+import RecommendationPerformance from './components/RecommendationPerformance';
 import Header from './components/Header';
 import LoginPage from './components/LoginPage';
 
@@ -156,6 +157,7 @@ function AppContent() {
               onReset={portfolio.reset}
               onTradeComplete={handleTradeComplete}
             />
+            <RecommendationPerformance />
             <TradeHistory
               trades={trades.data}
               loading={trades.loading}

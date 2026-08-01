@@ -1,11 +1,21 @@
-import express from 'express';
-import cors from 'cors';
+// Load .env before anything else imports a module that reads process.env.
+// This used to live only in marketService.js, which is imported after
+// firestore.js - so credentials were read before .env had been applied and it
+// only worked because the deployment injects real environment variables.
+import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.join(__dirname, '.env') });
+
+import express from 'express';
+import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
 import {
   getPortfolio,
-  updateCash,
+  adjustCash,
   getHoldings,
   getHolding,
   upsertHolding,
@@ -24,28 +34,91 @@ import {
   getFeesSummary
 } from './database.js';
 
-// Broker & Tax Constants (IBI Israel)
-const MIN_COMMISSION = 7.5;  // $7.50 minimum per trade
-const TAX_RATE = 0.25;       // 25% Israel capital gains tax
+// Broker & tax math lives in one place - see tradeMath.js
+import {
+  calculateBuy,
+  calculateSell,
+  buildSellTrade,
+  buyCommissionPerShareFor,
+  FALLBACK_TAKE_PROFIT_PCT,
+  FALLBACK_STOP_LOSS_PCT
+} from './tradeMath.js';
 import {
   getQuote,
+  getFreshQuote,
   getQuotes,
+  getDailyBars,
   scanMarket,
   searchStocks,
   analyzeStock,
   getCompanyInfo,
   DEFAULT_STOCKS
 } from './marketService.js';
-import { startPriceMonitor } from './priceMonitor.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import {
+  getLatestRecommendation,
+  getPerformanceStats,
+  evaluateOutcomes
+} from './recommendationLog.js';
+import { startPriceMonitor, stopPriceMonitor } from './priceMonitor.js';
+import { requireAuth } from './auth.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
-app.use(express.json());
+// CORS: an allowlist, not a wildcard. With no auth and `cors()` open to every
+// origin, any website a browser visited could have driven this portfolio.
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+app.use(cors({
+  origin(origin, callback) {
+    // Same-origin requests (the production build served by this server) and
+    // non-browser clients send no Origin header.
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Origin not allowed'));
+  }
+}));
+app.use(express.json({ limit: '100kb' }));
+
+// Liveness probe - must stay unauthenticated and cheap.
+app.get('/api/health', (req, res) => {
+  res.json({ success: true, status: 'ok', uptime: process.uptime() });
+});
+
+// Everything else under /api requires a verified Firebase ID token.
+app.use('/api', requireAuth);
+
+// =====================
+// REQUEST VALIDATION
+// =====================
+
+/**
+ * Ticker symbols reach upstream URLs and Firestore document ids, so they are
+ * checked rather than trusted. Returns an error string, or null when valid.
+ */
+function validateSymbol(symbol) {
+  if (typeof symbol !== 'string' || !symbol.trim()) {
+    return 'A ticker symbol is required';
+  }
+  if (!/^[A-Za-z.-]{1,10}$/.test(symbol.trim())) {
+    return 'Invalid ticker symbol';
+  }
+  return null;
+}
+
+/**
+ * Share counts arrive as JSON and used to be trusted blindly: a non-numeric
+ * value produced NaN, and every `NaN <= 0` / `cash < NaN` comparison is false,
+ * which walked straight past the insufficient-funds check.
+ * Returns a positive integer, or null when invalid.
+ */
+function parseShareCount(value) {
+  const shares = typeof value === 'number' ? value : Number(value);
+  if (!Number.isInteger(shares) || shares <= 0) return null;
+  return shares;
+}
 
 // Serve static files from the React app build directory in production
 const clientBuildPath = path.join(__dirname, '..', 'client', 'dist');
@@ -259,17 +332,22 @@ app.post('/api/portfolio/reset', async (req, res) => {
 // Execute a BUY order - fetches fresh price at execution time
 app.post('/api/trade/buy', async (req, res) => {
   try {
-    const { symbol, shares, takeProfit: requestedTakeProfit, stopLoss: requestedStopLoss } = req.body;
+    const { symbol, takeProfit: requestedTakeProfit, stopLoss: requestedStopLoss } = req.body;
 
-    if (!symbol || !shares || shares <= 0) {
+    const symbolError = validateSymbol(req.body.symbol);
+    if (symbolError) return res.status(400).json({ success: false, error: symbolError });
+
+    const shares = parseShareCount(req.body.shares);
+    if (shares === null) {
       return res.status(400).json({
         success: false,
-        error: 'Valid symbol and positive share count required'
+        error: 'Share count must be a positive whole number'
       });
     }
 
-    // CRITICAL: Fetch fresh, live price at execution time
-    const quote = await getQuote(symbol.toUpperCase());
+    // Fetch a live price at execution time. getQuote() is cache-backed and its
+    // TTL is long while the market is closed, so it must not price a trade.
+    const quote = await getFreshQuote(symbol.toUpperCase());
     if (!quote || !quote.price) {
       return res.status(400).json({
         success: false,
@@ -278,47 +356,57 @@ app.post('/api/trade/buy', async (req, res) => {
     }
 
     const price = quote.price;
-    const total = price * shares;
-
-    // Calculate commission (0.1% with $7.50 minimum)
-    const commission = Math.max(MIN_COMMISSION, total * 0.001);
+    const { total, commission, totalCost, commissionPerShare } = calculateBuy({ price, shares });
 
     // Check if user has enough cash (including commission)
     const portfolio = await getPortfolio();
-    const totalWithCommission = total + commission;
-    if (portfolio.cash < totalWithCommission) {
+    if (portfolio.cash < totalCost) {
       return res.status(400).json({
         success: false,
-        error: `Insufficient funds. Required: $${totalWithCommission.toFixed(2)} (incl. $${commission.toFixed(2)} fee), Available: $${portfolio.cash.toFixed(2)}`
+        error: `Insufficient funds. Required: $${totalCost.toFixed(2)} (incl. $${commission.toFixed(2)} fee), Available: $${portfolio.cash.toFixed(2)}`
       });
     }
 
-    // Use provided targets or calculate defaults (+8% profit, -4% stop loss)
-    const takeProfit = requestedTakeProfit || price * 1.08;
-    const stopLoss = requestedStopLoss || price * 0.96;
+    // Targets normally come from the ATR-based battle plan; this is the fallback.
+    const takeProfit = requestedTakeProfit || price * (1 + FALLBACK_TAKE_PROFIT_PCT);
+    const stopLoss = requestedStopLoss || price * (1 - FALLBACK_STOP_LOSS_PCT);
 
     // Update cash (deduct trade amount + commission)
-    await updateCash(portfolio.cash - totalWithCommission);
+    const newCashBalance = await adjustCash(-totalCost);
 
     // Track commission
     await addCommission(commission);
 
     // Update holdings (calculate new average cost if adding to position)
     const existingHolding = await getHolding(symbol.toUpperCase());
-    let newShares, newAvgCost;
+    let newShares, newAvgCost, newAvgCommissionPerShare;
 
     if (existingHolding) {
       const existingValue = existingHolding.shares * existingHolding.avg_cost;
       const newValue = shares * price;
       newShares = existingHolding.shares + shares;
       newAvgCost = (existingValue + newValue) / newShares;
+
+      const existingCommission = buyCommissionPerShareFor(existingHolding) * existingHolding.shares;
+      newAvgCommissionPerShare = (existingCommission + commission) / newShares;
     } else {
       newShares = shares;
       newAvgCost = price;
+      newAvgCommissionPerShare = commissionPerShare;
     }
 
     // Store holding with TP/SL for automatic monitoring
-    await upsertHolding(symbol.toUpperCase(), newShares, newAvgCost, takeProfit, stopLoss);
+    await upsertHolding(symbol.toUpperCase(), newShares, newAvgCost, takeProfit, stopLoss, newAvgCommissionPerShare);
+
+    // Stamp the trade with the recommendation that was on screen. Read from
+    // the log rather than trusting the client, so the link can't be forged or
+    // forgotten - this is what makes hit-rate measurable later.
+    let recommendation = null;
+    try {
+      recommendation = await getLatestRecommendation(symbol);
+    } catch (e) {
+      console.error('Could not attach recommendation to trade:', e.message);
+    }
 
     // Record trade with commission
     const trade = {
@@ -330,7 +418,11 @@ app.post('/api/trade/buy', async (req, res) => {
       total,
       commission,
       take_profit: takeProfit,
-      stop_loss: stopLoss
+      stop_loss: stopLoss,
+      recommendationId: recommendation?.id ?? null,
+      verdictAtEntry: recommendation?.verdict ?? null,
+      confidenceAtEntry: recommendation?.confidence ?? null,
+      confidenceScoreAtEntry: recommendation?.confidenceScore ?? null
     };
     await addTrade(trade);
 
@@ -339,7 +431,7 @@ app.post('/api/trade/buy', async (req, res) => {
       data: {
         trade,
         message: `Bought ${shares} shares of ${symbol.toUpperCase()} at $${price.toFixed(2)} (Fee: $${commission.toFixed(2)})`,
-        newCashBalance: portfolio.cash - totalWithCommission,
+        newCashBalance,
         commission,
         tradingPlan: {
           entry: price,
@@ -357,12 +449,16 @@ app.post('/api/trade/buy', async (req, res) => {
 // Execute a SELL order
 app.post('/api/trade/sell', async (req, res) => {
   try {
-    const { symbol, shares } = req.body;
+    const { symbol } = req.body;
 
-    if (!symbol || !shares || shares <= 0) {
+    const symbolError = validateSymbol(req.body.symbol);
+    if (symbolError) return res.status(400).json({ success: false, error: symbolError });
+
+    const shares = parseShareCount(req.body.shares);
+    if (shares === null) {
       return res.status(400).json({
         success: false,
-        error: 'Valid symbol and positive share count required'
+        error: 'Share count must be a positive whole number'
       });
     }
 
@@ -382,8 +478,8 @@ app.post('/api/trade/sell', async (req, res) => {
       });
     }
 
-    // CRITICAL: Fetch fresh, live price at execution time
-    const quote = await getQuote(symbol.toUpperCase());
+    // Fetch a live price at execution time - never price a trade off the cache.
+    const quote = await getFreshQuote(symbol.toUpperCase());
     if (!quote || !quote.price) {
       return res.status(400).json({
         success: false,
@@ -392,54 +488,43 @@ app.post('/api/trade/sell', async (req, res) => {
     }
 
     const price = quote.price;
-    const total = price * shares;
-
-    // Calculate commission (0.1% with $7.50 minimum)
-    const commission = Math.max(MIN_COMMISSION, total * 0.001);
-
-    // Calculate realized P&L (before commission and tax)
-    const costBasis = shares * holding.avg_cost;
-    const grossPL = total - costBasis;
-
-    // Calculate tax (only on profit after commission)
-    const profitAfterCommission = grossPL - commission;
-    const taxAmount = profitAfterCommission > 0 ? profitAfterCommission * TAX_RATE : 0;
-
-    // Net proceeds = Sale total - Commission - Tax
-    const netProceeds = total - commission - taxAmount;
+    const outcome = calculateSell({
+      price,
+      shares,
+      avgCost: holding.avg_cost,
+      buyCommissionPerShare: buyCommissionPerShareFor(holding)
+    });
 
     // Update cash (add net proceeds)
-    const portfolio = await getPortfolio();
-    await updateCash(portfolio.cash + netProceeds);
+    const newCashBalance = await adjustCash(outcome.netProceeds);
 
     // Track commission and tax
-    await addCommission(commission);
-    if (taxAmount > 0) {
-      await addTax(taxAmount);
+    await addCommission(outcome.commission);
+    if (outcome.taxAmount > 0) {
+      await addTax(outcome.taxAmount);
     }
-    await addRealizedPL(grossPL);
+    await addRealizedPL(outcome.grossPL);
 
     // Update holdings
     const newShares = holding.shares - shares;
-    await upsertHolding(symbol.toUpperCase(), newShares, holding.avg_cost);
-
-    // Calculate net realized P&L (after fees and tax)
-    const netRealizedPL = grossPL - commission - taxAmount;
-    const realizedPLPercent = (grossPL / costBasis) * 100;
+    await upsertHolding(
+      symbol.toUpperCase(),
+      newShares,
+      holding.avg_cost,
+      null,
+      null,
+      buyCommissionPerShareFor(holding)
+    );
 
     // Record trade with all fee details
-    const trade = {
+    const trade = buildSellTrade({
       id: uuidv4(),
-      symbol: symbol.toUpperCase(),
-      action: 'SELL',
+      symbol,
       shares,
       price,
-      total,
-      commission,
-      taxAmount,
-      grossPL,
-      netRealizedPL
-    };
+      outcome,
+      exitType: 'MANUAL'
+    });
     await addTrade(trade);
 
     res.json({
@@ -447,12 +532,12 @@ app.post('/api/trade/sell', async (req, res) => {
       data: {
         trade,
         message: `Sold ${shares} shares of ${symbol.toUpperCase()} at $${price.toFixed(2)}`,
-        newCashBalance: portfolio.cash + netProceeds,
-        grossPL,
-        commission,
-        taxAmount,
-        netRealizedPL,
-        realizedPLPercent
+        newCashBalance,
+        grossPL: outcome.grossPL,
+        commission: outcome.commission,
+        taxAmount: outcome.taxAmount,
+        netRealizedPL: outcome.netRealizedPL,
+        realizedPLPercent: outcome.realizedPLPercent
       }
     });
   } catch (error) {
@@ -546,16 +631,60 @@ app.post('/api/alerts/read-all', async (req, res) => {
 // CATCH-ALL FOR SPA ROUTING
 // =====================
 
+// =====================
+// RECOMMENDATION PERFORMANCE
+// =====================
+
+// Does the scanner actually work? Hit rate and expectancy of past calls.
+app.get('/api/recommendations/stats', async (req, res) => {
+  try {
+    const stats = await getPerformanceStats();
+    res.json({ success: true, data: stats });
+  } catch (error) {
+    console.error('Stats error:', error);
+    res.status(500).json({ success: false, error: 'Could not compute recommendation stats' });
+  }
+});
+
+// Score any recommendations that are now old enough to judge.
+app.post('/api/recommendations/evaluate', async (req, res) => {
+  try {
+    const result = await evaluateOutcomes(getDailyBars);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    console.error('Evaluate error:', error);
+    res.status(500).json({ success: false, error: 'Could not evaluate recommendations' });
+  }
+});
+
+// Unknown API routes must 404 as JSON. The SPA catch-all below used to answer
+// them with index.html and HTTP 200, so the client tried to parse HTML as JSON.
+app.use('/api', (req, res) => {
+  res.status(404).json({ success: false, error: `No such endpoint: ${req.method} ${req.originalUrl}` });
+});
+
 // Serve React app for any non-API routes (must be after all API routes)
 app.get('*', (req, res) => {
   res.sendFile(path.join(clientBuildPath, 'index.html'));
+});
+
+// Last-resort error handler. Internal messages stay in the log, not in the
+// response body.
+app.use((err, req, res, _next) => {
+  console.error(`Unhandled error on ${req.method} ${req.originalUrl}:`, err);
+  if (res.headersSent) return;
+  const status = err?.message === 'Origin not allowed' ? 403 : 500;
+  res.status(status).json({
+    success: false,
+    error: status === 403 ? 'Origin not allowed' : 'Internal server error'
+  });
 });
 
 // =====================
 // START SERVER
 // =====================
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`🚀 Trading Server running on http://localhost:${PORT}`);
   console.log(`📈 Market Scanner API: http://localhost:${PORT}/api/market/scan`);
   console.log(`💼 Portfolio API: http://localhost:${PORT}/api/portfolio`);
@@ -564,4 +693,37 @@ app.listen(PORT, () => {
 
   // Start the price monitoring service for auto TP/SL execution
   startPriceMonitor();
+
+  // Score matured recommendations periodically, so the hit-rate stats stay
+  // current without anyone having to ask for them.
+  const runEvaluation = () => {
+    evaluateOutcomes(getDailyBars).catch(e => console.error('Outcome evaluation failed:', e.message));
+  };
+  runEvaluation();
+  evaluationInterval = setInterval(runEvaluation, 6 * 60 * 60 * 1000);
+});
+
+let evaluationInterval = null;
+
+// Shut down cleanly so a redeploy can't kill the process mid-trade-write.
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n${signal} received - shutting down`);
+  stopPriceMonitor();
+  if (evaluationInterval) clearInterval(evaluationInterval);
+  server.close(() => {
+    console.log('HTTP server closed');
+    process.exit(0);
+  });
+  // Don't hang forever on a stuck connection.
+  setTimeout(() => process.exit(0), 10000).unref();
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason);
 });

@@ -1,19 +1,51 @@
 import { useState, useCallback } from 'react';
+import { auth } from '../firebase/config';
 import type { ApiResponse, StockAnalysis, Portfolio, Trade, Quote, Alert } from '../types';
 
-const API_BASE = '/api';
+export const API_BASE = '/api';
 
-async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<ApiResponse<T>> {
+/**
+ * Every API call carries the signed-in user's Firebase ID token. The server
+ * verifies it; without this header the request is rejected with 401.
+ */
+export async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<ApiResponse<T>> {
   try {
+    const token = await auth.currentUser?.getIdToken();
+
     const response = await fetch(`${API_BASE}${endpoint}`, {
+      ...options,
       headers: {
         'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(options?.headers || {}),
       },
-      ...options,
     });
-    return await response.json();
+
+    // A non-JSON body (an HTML error page, a proxy timeout) used to surface as
+    // a raw "SyntaxError: Unexpected token <" in the UI.
+    const body = await response.text();
+    let parsed: ApiResponse<T> | null = null;
+    try {
+      parsed = body ? JSON.parse(body) : null;
+    } catch {
+      parsed = null;
+    }
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: parsed?.error || `Request failed (${response.status})`,
+      };
+    }
+    if (!parsed) {
+      return { success: false, error: 'Unexpected response from server' };
+    }
+    return parsed;
   } catch (error) {
-    return { success: false, error: String(error) };
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Network error',
+    };
   }
 }
 
@@ -172,6 +204,45 @@ export function useStockAnalysis() {
   }, []);
 
   return { analyze, loading, error };
+}
+
+export interface PerformanceBucket {
+  count: number;
+  targetHitRate: number | null;
+  stopHitRate: number | null;
+  unresolvedRate: number | null;
+  avgForwardReturnPct: number | null;
+  avgRMultiple: number | null;
+}
+
+export interface RecommendationStats {
+  horizonDays: number;
+  evaluated: number;
+  pending: number;
+  overall: PerformanceBucket;
+  byVerdict: Record<string, PerformanceBucket>;
+  byConfidence: Record<string, PerformanceBucket>;
+}
+
+/** Whether the scanner's own past calls actually worked. */
+export function useRecommendationStats() {
+  const [data, setData] = useState<RecommendationStats | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    const result = await fetchApi<RecommendationStats>('/recommendations/stats');
+    setLoading(false);
+    if (result.success && result.data) {
+      setData(result.data);
+    } else {
+      setError(result.error || 'Failed to load recommendation stats');
+    }
+  }, []);
+
+  return { data, loading, error, refresh };
 }
 
 export interface CompanyProfile {

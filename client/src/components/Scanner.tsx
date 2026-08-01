@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import type { StockAnalysis, Verdict } from '../types';
 import { useLanguage } from '../i18n';
+import { fetchApi } from '../hooks/useApi';
 import OrderEditor from './OrderEditor';
 
 interface ScannerProps {
@@ -803,8 +804,8 @@ export default function Scanner({
     setSearchedStock(null);
 
     try {
-      const response = await fetch(`/api/market/analyze/${ticker}`);
-      const result = await response.json();
+      // Goes through fetchApi so the request carries the auth token
+      const result = await fetchApi<StockAnalysis>(`/market/analyze/${encodeURIComponent(ticker)}`);
 
       if (result.success && result.data) {
         setSearchedStock(result.data);
@@ -813,7 +814,7 @@ export default function Scanner({
         setSearchError(result.error || (isRTL ? 'לא נמצאה מניה' : 'Stock not found'));
       }
     } catch (err) {
-      setSearchError(isRTL ? 'שגיאה בחיפוש' : 'Search error');
+      setSearchError(err instanceof Error ? err.message : (isRTL ? 'שגיאה בחיפוש' : 'Search error'));
     } finally {
       setSearchLoading(false);
     }
@@ -1126,11 +1127,15 @@ export default function Scanner({
                       </td>
                       {/* Confidence */}
                       <td className="px-4 py-3">
+                        {/* A 0-100 score, not a percentage of anything - the
+                            "%" sign implied a precision the number never had.
+                            Colour follows the server's confidence label so a
+                            BUY_NOW can't render as a red "low" score. */}
                         <span className={`text-sm font-semibold ${
-                          battlePlan.confidenceScore >= 70 ? 'text-green-400' :
-                          battlePlan.confidenceScore >= 45 ? 'text-yellow-400' : 'text-red-400'
+                          battlePlan.confidence === 'High' ? 'text-green-400' :
+                          battlePlan.confidence === 'Medium' ? 'text-yellow-400' : 'text-red-400'
                         }`}>
-                          {battlePlan.confidenceScore}%
+                          {battlePlan.confidenceScore}
                         </span>
                       </td>
                       {/* Action */}

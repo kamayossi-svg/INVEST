@@ -1,8 +1,7 @@
 import { useState, useMemo } from 'react';
 import type { StockAnalysis } from '../types';
 import { useLanguage } from '../i18n';
-
-const API_BASE = '/api';
+import { fetchApi } from '../hooks/useApi';
 
 interface OrderEditorProps {
   stock: StockAnalysis;
@@ -182,6 +181,34 @@ export default function OrderEditor({ stock, cash, onClose, onSuccess }: OrderEd
     };
   }, [quantity, currentPrice, takeProfit, stopLoss, cash]);
 
+  // Why the server suggested this many shares. 'risk' means the size was set
+  // by the risk budget as intended; anything else means a limit cut it down.
+  const position = battlePlan.suggestedPosition;
+  const sizingNote = useMemo(() => {
+    if (!position.limitedBy) return null;
+    const risk = position.riskPercentOfEquity;
+    const budget = position.riskBudget;
+
+    switch (position.limitedBy) {
+      case 'risk':
+        return t('sizedByRisk')
+          .replace('{risk}', String(risk ?? ''))
+          .replace('{budget}', budget != null ? formatCurrency(budget) : '');
+      case 'concentration':
+        return t('sizedByConcentration');
+      case 'cash':
+        return t('sizedByCash');
+      case 'portfolio_heat':
+        return t('sizedByHeat');
+      case 'max_positions':
+        return t('sizedByMaxPositions');
+      case 'below_minimum':
+        return t('sizedBelowMinimum');
+      default:
+        return null;
+    }
+  }, [position, t]);
+
   // Handle order submission
   const handleSubmit = async () => {
     if (!calculations.canAfford) {
@@ -193,9 +220,9 @@ export default function OrderEditor({ stock, cash, onClose, onSuccess }: OrderEd
     setError(null);
 
     try {
-      const response = await fetch(`${API_BASE}/trade/buy`, {
+      // Goes through fetchApi so the request carries the auth token
+      const result = await fetchApi('/trade/buy', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           symbol: stock.symbol,
           shares: quantity,
@@ -203,8 +230,6 @@ export default function OrderEditor({ stock, cash, onClose, onSuccess }: OrderEd
           stopLoss: stopLoss,
         }),
       });
-
-      const result = await response.json();
 
       if (result.success) {
         onSuccess();
@@ -284,6 +309,13 @@ export default function OrderEditor({ stock, cash, onClose, onSuccess }: OrderEd
             {!calculations.canAfford && (
               <p className="text-red-400 text-xs mt-2">
                 {t('exceedsCash')} ({formatCurrency(cash)})
+              </p>
+            )}
+            {/* Explain where the suggested size came from, so the number is
+                auditable rather than magic. */}
+            {sizingNote && (
+              <p className="text-xs text-gray-500 mt-2 leading-relaxed">
+                {sizingNote}
               </p>
             )}
           </div>
