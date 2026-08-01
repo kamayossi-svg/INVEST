@@ -71,9 +71,26 @@ export interface RiskReward {
   description: string;
 }
 
+/** Which rule determined the position size. 'risk' is the intended case. */
+export type PositionLimitReason =
+  | 'risk'
+  | 'concentration'
+  | 'cash'
+  | 'portfolio_heat'
+  | 'max_positions'
+  | 'below_minimum'
+  | 'no_account_data';
+
 export interface SuggestedPosition {
   shares: number;
   investment: number;
+  limitedBy?: PositionLimitReason;
+  /** Dollars of equity intended to be at risk on this trade. */
+  riskBudget?: number;
+  /** Actual dollar risk as a percentage of equity. */
+  riskPercentOfEquity?: number;
+  /** Account equity the sizing was based on. */
+  equityUsed?: number;
   maxRisk: number;
   maxProfit: number;
   // Net Profit Calculation (After Fees & Tax)
@@ -81,7 +98,10 @@ export interface SuggestedPosition {
   totalCommission?: number;
   profitAfterFees?: number;
   taxAmount?: number;
+  /** Not floored at zero - a plan that loses money after fees reports a negative. */
   netProfit?: number;
+  /** Percentage move needed just to cover the round-trip commission. */
+  breakEvenPercent?: number;
   taxRate?: number;
 }
 
@@ -166,7 +186,10 @@ export interface SafetyData {
 export interface BattlePlan {
   verdict: Verdict;
   confidence: Confidence;
+  /** Clamped to 0-100 for display. */
   confidenceScore: number;
+  /** Unclamped score (roughly -300..130), used for ranking and debugging. */
+  rawConfidenceScore?: number;
   reasoning: string;
   whyFactors: string[];
   warnings?: string[];
@@ -215,10 +238,13 @@ export interface StockAnalysis extends Quote {
 }
 
 export interface Holding {
-  id: number;
+  /** Legacy holdings use a numeric timestamp id; new ones use a uuid. */
+  id: number | string;
   symbol: string;
   shares: number;
   avg_cost: number;
+  /** Buy-side commission per share, used to compute the taxable gain on exit. */
+  avg_commission_per_share?: number;
   currentPrice: number;
   marketValue: number;
   costBasis: number;
@@ -274,6 +300,19 @@ export interface Trade {
   take_profit?: number;
   stop_loss?: number;
   executed_at: string;
+  // SELL trade fields
+  commission?: number;
+  buyCommission?: number;
+  taxAmount?: number;
+  grossPL?: number;
+  netRealizedPL?: number;
+  realizedPLPercent?: number;
+  /** 'MANUAL' | 'TAKE_PROFIT' | 'STOP_LOSS' */
+  exit_type?: string;
+  // Legacy shape written by the price monitor before it shared the money math
+  // with the manual sell path. Kept so historical trades still display.
+  realized_pl?: number;
+  realized_pl_percent?: number;
 }
 
 export interface ApiResponse<T> {

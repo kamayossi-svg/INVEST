@@ -1,4 +1,15 @@
-import { getHoldings, getPortfolio, updateCash, upsertHolding, addTrade, addAlert } from './database.js';
+import { v4 as uuidv4 } from 'uuid';
+import {
+  getHoldings,
+  adjustCash,
+  upsertHolding,
+  addTrade,
+  addAlert,
+  addCommission,
+  addTax,
+  addRealizedPL
+} from './database.js';
+import { calculateSell, buildSellTrade, buyCommissionPerShareFor } from './tradeMath.js';
 import { getQuote, isMarketOpen } from './marketService.js';
 
 // Check intervals in milliseconds
@@ -8,10 +19,27 @@ const MARKET_CLOSED_INTERVAL = 300000; // 5 minutes when market is closed
 let monitorInterval = null;
 let currentInterval = MARKET_CLOSED_INTERVAL; // Start with closed interval
 
+// A pass that runs longer than the interval would otherwise overlap with the
+// next one, and both could exit the same position - a double sell.
+let checkInFlight = false;
+
 /**
  * Check all holdings against their take-profit and stop-loss levels
  */
 export async function checkPriceTargets() {
+  if (checkInFlight) {
+    console.log('⏭️  Previous price check still running - skipping this pass');
+    return;
+  }
+  checkInFlight = true;
+  try {
+    await runPriceCheck();
+  } finally {
+    checkInFlight = false;
+  }
+}
+
+async function runPriceCheck() {
   const marketStatus = isMarketOpen();
   const marketOpen = marketStatus.isOpen;
 
@@ -110,49 +138,59 @@ async function checkRetroactivePriceTargets() {
  * Execute an automatic exit (sell all shares)
  */
 async function executeAutoExit(holding, exitPrice, exitType) {
-  const portfolio = await getPortfolio();
   const shares = holding.shares;
-  const totalProceeds = shares * exitPrice;
-  const costBasis = shares * holding.avg_cost;
-  const realizedPL = totalProceeds - costBasis;
-  const realizedPLPercent = ((realizedPL / costBasis) * 100).toFixed(2);
 
-  // Update cash
-  const newCash = portfolio.cash + totalProceeds;
-  await updateCash(newCash);
+  // Same money math as a manual sell. This path used to credit the full
+  // proceeds and charge neither commission nor tax, which inflated cash and
+  // left realized P&L out of the portfolio totals entirely.
+  const outcome = calculateSell({
+    price: exitPrice,
+    shares,
+    avgCost: holding.avg_cost,
+    buyCommissionPerShare: buyCommissionPerShareFor(holding)
+  });
+
+  // Update cash atomically - a manual trade may be landing at the same moment
+  await adjustCash(outcome.netProceeds);
+
+  // Track commission, tax and realized P&L
+  await addCommission(outcome.commission);
+  if (outcome.taxAmount > 0) {
+    await addTax(outcome.taxAmount);
+  }
+  await addRealizedPL(outcome.grossPL);
 
   // Remove holding
   await upsertHolding(holding.symbol, 0, 0);
 
-  // Record the trade
-  await addTrade({
-    id: Date.now(),
+  // Record the trade in the same shape a manual sell produces
+  await addTrade(buildSellTrade({
+    id: uuidv4(),
     symbol: holding.symbol,
-    action: 'SELL',
-    shares: shares,
+    shares,
     price: exitPrice,
-    total: totalProceeds,
-    exit_type: exitType, // 'TAKE_PROFIT' or 'STOP_LOSS'
-    realized_pl: realizedPL,
-    realized_pl_percent: parseFloat(realizedPLPercent)
-  });
+    outcome,
+    exitType
+  }));
 
   // Create alert for user
   const isProfit = exitType === 'TAKE_PROFIT';
+  const netPL = outcome.netRealizedPL;
+  const plPercent = outcome.realizedPLPercent.toFixed(2);
   await addAlert({
     type: exitType,
     symbol: holding.symbol,
     shares: shares,
     exit_price: exitPrice,
     target_price: isProfit ? holding.take_profit : holding.stop_loss,
-    realized_pl: realizedPL,
-    realized_pl_percent: parseFloat(realizedPLPercent),
+    realized_pl: netPL,
+    realized_pl_percent: parseFloat(plPercent),
     message: isProfit
-      ? `🎯 Take Profit executed for ${holding.symbol}! Sold ${shares} shares at $${exitPrice.toFixed(2)}. Profit: $${realizedPL.toFixed(2)} (+${realizedPLPercent}%)`
-      : `🛑 Stop Loss executed for ${holding.symbol}! Sold ${shares} shares at $${exitPrice.toFixed(2)}. Loss: $${Math.abs(realizedPL).toFixed(2)} (${realizedPLPercent}%)`
+      ? `🎯 Take Profit executed for ${holding.symbol}! Sold ${shares} shares at $${exitPrice.toFixed(2)}. Net after fees & tax: $${netPL.toFixed(2)}`
+      : `🛑 Stop Loss executed for ${holding.symbol}! Sold ${shares} shares at $${exitPrice.toFixed(2)}. Net after fees: $${netPL.toFixed(2)}`
   });
 
-  console.log(`✅ Auto-exit complete: ${holding.symbol} - ${exitType} - P&L: $${realizedPL.toFixed(2)} (${realizedPLPercent}%)`);
+  console.log(`✅ Auto-exit complete: ${holding.symbol} - ${exitType} - gross P&L: $${outcome.grossPL.toFixed(2)}, fees: $${outcome.commission.toFixed(2)}, tax: $${outcome.taxAmount.toFixed(2)}, net: $${netPL.toFixed(2)}`);
 }
 
 /**
@@ -161,6 +199,14 @@ async function executeAutoExit(holding, exitPrice, exitType) {
 export function startPriceMonitor() {
   if (monitorInterval) {
     console.log('Price monitor already running');
+    return;
+  }
+
+  // Safety valve: the monitor writes to the live portfolio (auto-sells positions).
+  // Set DISABLE_PRICE_MONITOR=1 when running a second instance (e.g. local dev
+  // alongside the deployed server) so two monitors can't both exit the same position.
+  if (process.env.DISABLE_PRICE_MONITOR === '1') {
+    console.log('⏸️  Price Monitor DISABLED (DISABLE_PRICE_MONITOR=1) - no automatic TP/SL execution');
     return;
   }
 

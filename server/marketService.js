@@ -1,7 +1,19 @@
 import dotenv from 'dotenv';
+import { db } from './firestore.js';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import Alpaca from '@alpacahq/alpaca-trade-api';
+import { calculateCommission, TAX_RATE, MIN_COMMISSION } from './tradeMath.js';
+import { getPortfolio, getHoldings } from './database.js';
+import { logRecommendations } from './recommendationLog.js';
+import {
+  RISK_PER_TRADE_PCT,
+  MAX_POSITION_PCT_OF_EQUITY,
+  CASH_RESERVE_PCT,
+  MIN_POSITION_VALUE,
+  MAX_OPEN_POSITIONS,
+  MAX_PORTFOLIO_HEAT_PCT
+} from './riskConfig.js';
 
 // Load .env from the server directory
 const __filename = fileURLToPath(import.meta.url);
@@ -281,10 +293,15 @@ const analystCache = new Map();
 const companyProfileCache = new Map();
 const companyNewsCache = new Map();
 const earningsCache = new Map();
-const QUOTE_CACHE_TTL_MARKET_OPEN = 60000;    // 60 seconds when market is open
-const QUOTE_CACHE_TTL_MARKET_CLOSED = Infinity; // Never expire when market is closed
+// TTLs are finite in every state. They used to be Infinity while the market was
+// closed, to stop the verdict flipping between refreshes - but the flipping came
+// from feeding an in-progress daily bar to the indicators (see
+// dropPartialTodayBar), not from the cache. A never-expiring cache only served
+// arbitrarily old prices and hid genuinely stale data.
+const QUOTE_CACHE_TTL_MARKET_OPEN = 60000;       // 60 seconds when market is open
+const QUOTE_CACHE_TTL_MARKET_CLOSED = 900000;    // 15 minutes when market is closed
 const HISTORICAL_CACHE_TTL_MARKET_OPEN = 300000; // 5 minutes when market is open
-const HISTORICAL_CACHE_TTL_MARKET_CLOSED = Infinity; // Never expire when market is closed
+const HISTORICAL_CACHE_TTL_MARKET_CLOSED = 3600000; // 1 hour when market is closed
 const ANALYST_CACHE_TTL = 86400000;   // 24 hours for analyst data (changes infrequently)
 const COMPANY_PROFILE_CACHE_TTL = 86400000; // 24 hours for company profile (rarely changes)
 const COMPANY_NEWS_CACHE_TTL = 900000; // 15 minutes for news
@@ -310,17 +327,201 @@ async function finnhubRateLimitedFetch(url) {
   return fetch(url);
 }
 
+// Broker fees & tax: single source of truth in tradeMath.js so the projected
+// net profit here matches what the trade routes actually charge.
+
 // =====================
-// BROKER FEES & TAX (Israel - IBI Style)
+// CONFIDENCE SCORE THRESHOLDS
 // =====================
-const MIN_COMMISSION = 7.5;  // USD per trade (IBI minimum)
-const TOTAL_COMMISSION = MIN_COMMISSION * 2;  // Buy + Sell = $15 per round trip
-const TAX_RATE = 0.25;  // 25% Israel capital gains tax
+// One scale, used by the verdict AND the confidence label. These used to be
+// three independent sets of numbers (verdict 60/47, label 70/50, UI colour
+// 70/45), so a BUY_NOW scoring 48 was shown as "Low confidence" in red.
+const SCORE_HIGH_CONFIDENCE = 70;  // "High" label
+const SCORE_STRONG_SETUP = 60;     // wording only - a BUY_NOW with room to spare
+const SCORE_BUY_NOW = 47;          // minimum score to issue BUY_NOW
+const SCORE_AVOID = 0;             // at or below: penalties beat every positive
+
+// Best achievable raw score: 90 from the filters (20+25+15+5+15+10) plus 40
+// from the bonuses (15+10+10+5). Penalties can drive it far below zero.
+const SCORE_MAX_ACHIEVABLE = 130;
+
+/**
+ * Raw score as a percentage of the best achievable score.
+ *
+ * Simply clamping at 100 was wrong: BUY_NOW candidates score 60-120 raw, so
+ * half of them pinned to exactly "100%" and became indistinguishable in the
+ * one column meant to rank them. Scaling by the maximum keeps the spread.
+ */
+function clampScore(score) {
+  return Math.max(0, Math.min(100, Math.round((score / SCORE_MAX_ACHIEVABLE) * 100)));
+}
+
+// =====================
+// ACCOUNT CONTEXT (for position sizing)
+// =====================
+// Read once and reused across a whole scan - a 500-symbol scan must not make
+// 500 Firestore reads.
+const ACCOUNT_CONTEXT_TTL = 60000;
+let accountContextCache = null;
+
+/**
+ * Equity, free cash and open-position count, as position sizing sees them.
+ *
+ * Holdings are valued at their last cached quote, falling back to average cost
+ * when no quote is available - sizing needs a stable number, not a fresh one.
+ */
+export async function getAccountContext(force = false) {
+  if (!force && accountContextCache && Date.now() - accountContextCache.at < ACCOUNT_CONTEXT_TTL) {
+    return accountContextCache.value;
+  }
+
+  try {
+    const [portfolio, holdings] = await Promise.all([getPortfolio(), getHoldings()]);
+    const cash = portfolio.cash || 0;
+
+    let holdingsValue = 0;
+    let openRisk = 0;
+    for (const h of holdings) {
+      const cached = quoteCache.get(h.symbol?.toUpperCase());
+      const markPrice = cached?.data?.price ?? h.avg_cost ?? 0;
+      holdingsValue += h.shares * markPrice;
+      // What this position loses if its stop is hit from here.
+      if (h.stop_loss && markPrice > h.stop_loss) {
+        openRisk += h.shares * (markPrice - h.stop_loss);
+      }
+    }
+
+    const value = {
+      cash,
+      equity: cash + holdingsValue,
+      holdingsValue,
+      openPositions: holdings.length,
+      openRisk,
+      isFallback: false
+    };
+    accountContextCache = { at: Date.now(), value };
+    return value;
+  } catch (error) {
+    console.error('Failed to read account context:', error.message);
+    // Never let a Firestore hiccup stop analysis; fall back to the last known
+    // value, or to a neutral one that yields conservative sizing.
+    const fallback = accountContextCache?.value || {
+      cash: 0, equity: 0, holdingsValue: 0, openPositions: 0, openRisk: 0
+    };
+    return { ...fallback, isFallback: true };
+  }
+}
+
+/**
+ * Solve share count from the account's risk budget and the stop distance,
+ * then apply the concentration, cash and viability limits in order.
+ *
+ * Reports which constraint bound the result so the UI can explain the number
+ * instead of just showing it.
+ */
+function calculatePositionSize({ price, lossPerShare, account }) {
+  const equity = account?.equity || 0;
+  const cash = account?.cash || 0;
+
+  if (equity <= 0 || price <= 0 || lossPerShare <= 0) {
+    return { shares: 0, limitedBy: 'no_account_data', riskBudget: 0, riskPercentOfEquity: 0 };
+  }
+
+  const riskBudget = equity * RISK_PER_TRADE_PCT;
+  let shares = Math.floor(riskBudget / lossPerShare);
+  let limitedBy = 'risk';
+
+  // A very tight stop would otherwise justify an enormous position.
+  const maxByConcentration = Math.floor((equity * MAX_POSITION_PCT_OF_EQUITY) / price);
+  if (shares > maxByConcentration) {
+    shares = maxByConcentration;
+    limitedBy = 'concentration';
+  }
+
+  // Never plan a position the account can't actually fund, keeping the cash
+  // reserve and the entry commission back.
+  const deployableCash = cash - (equity * CASH_RESERVE_PCT) - MIN_COMMISSION;
+  const maxByCash = Math.floor(deployableCash / price);
+  if (shares > maxByCash) {
+    shares = Math.max(0, maxByCash);
+    limitedBy = 'cash';
+  }
+
+  // Portfolio-level guards.
+  if (shares > 0 && account.openPositions >= MAX_OPEN_POSITIONS) {
+    return { shares: 0, limitedBy: 'max_positions', riskBudget, riskPercentOfEquity: 0 };
+  }
+  if (shares > 0 && account.openRisk + shares * lossPerShare > equity * MAX_PORTFOLIO_HEAT_PCT) {
+    const remainingHeat = equity * MAX_PORTFOLIO_HEAT_PCT - account.openRisk;
+    shares = Math.max(0, Math.floor(remainingHeat / lossPerShare));
+    limitedBy = 'portfolio_heat';
+  }
+
+  // Too small to be worth the round-trip commission.
+  if (shares > 0 && shares * price < MIN_POSITION_VALUE) {
+    return { shares: 0, limitedBy: 'below_minimum', riskBudget, riskPercentOfEquity: 0 };
+  }
+
+  const dollarRisk = shares * lossPerShare;
+  return {
+    shares,
+    limitedBy,
+    riskBudget: parseFloat(riskBudget.toFixed(2)),
+    riskPercentOfEquity: parseFloat(((dollarRisk / equity) * 100).toFixed(2))
+  };
+}
 
 // Scan results cache for market-closed consistency
+const SCAN_CACHE_TTL_MARKET_CLOSED = 4 * 3600000; // 4 hours
 let lastScanResults = null;
 let lastScanTimestamp = null;
 let lastMarketOpenState = null;
+
+// Firestore persistence for scan cache (survives server restarts)
+const scanCacheRef = db.collection('cache').doc('lastScan');
+
+async function persistScanCache(results) {
+  try {
+    const slim = results.slice(0, 100).map(r => ({
+      symbol: r.symbol, price: r.price, change: r.change,
+      changePercent: r.changePercent, volume: r.volume,
+      high: r.high, low: r.low, open: r.open,
+      previousClose: r.previousClose, name: r.name, sector: r.sector,
+      sma20: r.sma20, sma50: r.sma50, rsi: r.rsi,
+      rsiInterpretation: r.rsiInterpretation,
+      volumeRatio: r.volumeRatio, avgVolume20: r.avgVolume20,
+      isUptrend: r.isUptrend, passesAllFilters: r.passesAllFilters,
+      hasRealData: r.hasRealData, filterResults: r.filterResults,
+      battlePlan: r.battlePlan, analystData: r.analystData || null,
+      earningsData: r.earningsData || null, timestamp: r.timestamp
+    }));
+    await scanCacheRef.set({
+      results: JSON.stringify(slim),
+      timestamp: Date.now(),
+      count: slim.length
+    });
+    console.log('Persisted scan cache to Firestore (' + slim.length + ' stocks)');
+  } catch (e) {
+    console.error('Failed to persist scan cache:', e.message);
+  }
+}
+
+async function loadScanCacheFromFirestore() {
+  try {
+    const doc = await scanCacheRef.get();
+    if (doc.exists) {
+      const data = doc.data();
+      const results = JSON.parse(data.results);
+      console.log('Loaded scan cache from Firestore (' + results.length + ' stocks, age: ' + Math.round((Date.now() - data.timestamp) / 60000) + 'min)');
+      // Carry the original timestamp so the age check below sees the real age,
+      // not the age since this process happened to start.
+      return { results, timestamp: data.timestamp };
+    }
+  } catch (e) {
+    console.error('Failed to load scan cache from Firestore:', e.message);
+  }
+  return null;
+}
 
 // =====================
 // MARKET HOURS DETECTION
@@ -387,6 +588,36 @@ function getEasternTimeComponents() {
 }
 
 /**
+ * Remove the current session's still-forming daily bar, in place.
+ *
+ * Alpaca returns a bar for today as soon as the session opens, and it keeps
+ * updating until the close. Feeding it to SMA/RSI/ATR makes every indicator a
+ * moving target during market hours. Once the session has closed the bar is
+ * final and stays.
+ *
+ * @returns {boolean} whether a partial bar was removed
+ */
+function dropPartialTodayBar(barArray) {
+  if (!barArray.length) return false;
+  if (!isMarketOpen().isOpen) return false;
+
+  const todayET = getEasternTimeComponents().dateKey;
+  const lastBar = barArray[barArray.length - 1];
+  const lastBarDate = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date(lastBar.Timestamp));
+
+  if (lastBarDate === todayET) {
+    barArray.pop();
+    return true;
+  }
+  return false;
+}
+
+/**
  * Check if US stock market is currently open
  * @returns {object} - { isOpen, isEarlyClose, reason, nextOpenTime }
  */
@@ -435,6 +666,7 @@ function getQuoteCacheTTL() {
 // Requires stocks to appear as BUY_NOW in 2 consecutive scans
 // =====================
 const verdictHistoryCache = new Map(); // Tracks previous scan verdicts
+const rsiFilterHistory = new Map(); // RSI filter deadband hysteresis
 const VERDICT_HISTORY_TTL = 86400000;  // 24 hours - persists between scans throughout the trading day
 
 /**
@@ -564,11 +796,35 @@ function calculateRSI(prices, period = 14) {
 }
 
 /**
- * Calculate Volume Ratio
+ * Get the fraction of the trading day that has elapsed (0.0 to 1.0)
+ * Used to normalize intraday cumulative volume against daily averages.
+ */
+function getTradingDayFraction() {
+  const marketStatus = isMarketOpen();
+  if (!marketStatus.isOpen) return 1.0; // Market closed: volume is full-day
+
+  const et = getEasternTimeComponents();
+  const currentMinutes = et.hours * 60 + et.minutes;
+  const marketOpen = 9 * 60 + 30;
+  const marketClose = marketStatus.isEarlyClose ? 13 * 60 : 16 * 60;
+  const totalTradingMinutes = marketClose - marketOpen;
+
+  const elapsed = Math.max(0, currentMinutes - marketOpen);
+  const fraction = Math.min(1.0, elapsed / totalTradingMinutes);
+
+  return Math.max(0.10, fraction); // Min 10% to avoid near-zero division at open
+}
+
+/**
+ * Calculate Volume Ratio (normalized by time of day)
+ * During market hours, intraday cumulative volume is projected to full-day,
+ * then compared to the daily average.
  */
 function calculateVolumeRatio(currentVolume, avgVolume) {
   if (!avgVolume || avgVolume === 0) return 1;
-  return currentVolume / avgVolume;
+  const dayFraction = getTradingDayFraction();
+  const normalizedVolume = currentVolume / dayFraction;
+  return normalizedVolume / avgVolume;
 }
 
 /**
@@ -1041,13 +1297,18 @@ function detectWeakBreakout(price, sma50, volumeRatio, closes) {
  * @param {object} analystData - Analyst ratings from Finnhub
  * @returns {object} - Divergence check results
  */
-function checkAnalystDivergence(verdict, analystData) {
+/**
+ * Compare our technical signal against the analyst consensus.
+ *
+ * This runs while the score is still being assembled, i.e. before a verdict
+ * exists - so it takes the technical stance directly. It used to be called with
+ * the literal string 'BUY_NOW', which meant every stock was treated as a buy
+ * signal here and the bearish branch was unreachable.
+ */
+function checkAnalystDivergence({ systemBullish, systemBearish }, analystData) {
   if (!analystData || !analystData.consensus) {
     return { hasDivergence: false, divergenceType: 'no_data', warning: null };
   }
-
-  const systemBullish = verdict === 'BUY_NOW';
-  const systemBearish = verdict === 'AVOID';
 
   const analystBullish = ['Strong Buy', 'Buy'].includes(analystData.consensus);
   const analystBearish = ['Strong Sell', 'Sell'].includes(analystData.consensus);
@@ -1078,7 +1339,7 @@ function checkAnalystDivergence(verdict, analystData) {
     hasDivergence,
     divergenceType,
     warning,
-    systemVerdict: verdict,
+    systemStance: systemBullish ? 'bullish' : systemBearish ? 'bearish' : 'neutral',
     analystConsensus: analystData.consensus,
     analystScore: analystData.consensusScore
   };
@@ -1208,7 +1469,7 @@ async function fetchAnalystRatings(symbol) {
   try {
     // Fetch recommendation trends (rate limited)
     const recResponse = await finnhubRateLimitedFetch(
-      `${FINNHUB_BASE_URL}/stock/recommendation?symbol=${upperSymbol}&token=${FINNHUB_API_KEY}`
+      `${FINNHUB_BASE_URL}/stock/recommendation?symbol=${encodeURIComponent(upperSymbol)}&token=${FINNHUB_API_KEY}`
     );
 
     if (!recResponse.ok) {
@@ -1219,7 +1480,7 @@ async function fetchAnalystRatings(symbol) {
 
     // Fetch price target (rate limited)
     const targetResponse = await finnhubRateLimitedFetch(
-      `${FINNHUB_BASE_URL}/stock/price-target?symbol=${upperSymbol}&token=${FINNHUB_API_KEY}`
+      `${FINNHUB_BASE_URL}/stock/price-target?symbol=${encodeURIComponent(upperSymbol)}&token=${FINNHUB_API_KEY}`
     );
 
     let priceTarget = null;
@@ -1301,7 +1562,7 @@ async function fetchCompanyProfile(symbol) {
 
   try {
     const response = await finnhubRateLimitedFetch(
-      `${FINNHUB_BASE_URL}/stock/profile2?symbol=${upperSymbol}&token=${FINNHUB_API_KEY}`
+      `${FINNHUB_BASE_URL}/stock/profile2?symbol=${encodeURIComponent(upperSymbol)}&token=${FINNHUB_API_KEY}`
     );
 
     if (!response.ok) {
@@ -1358,7 +1619,7 @@ async function fetchCompanyNews(symbol, limit = 3) {
     const fromDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
     const response = await finnhubRateLimitedFetch(
-      `${FINNHUB_BASE_URL}/company-news?symbol=${upperSymbol}&from=${fromDate}&to=${toDate}&token=${FINNHUB_API_KEY}`
+      `${FINNHUB_BASE_URL}/company-news?symbol=${encodeURIComponent(upperSymbol)}&from=${fromDate}&to=${toDate}&token=${FINNHUB_API_KEY}`
     );
 
     if (!response.ok) {
@@ -1411,7 +1672,7 @@ async function fetchEarningsCalendar(symbol) {
     const toDate = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
     const response = await finnhubRateLimitedFetch(
-      `${FINNHUB_BASE_URL}/calendar/earnings?symbol=${upperSymbol}&from=${fromDate}&to=${toDate}&token=${FINNHUB_API_KEY}`
+      `${FINNHUB_BASE_URL}/calendar/earnings?symbol=${encodeURIComponent(upperSymbol)}&from=${fromDate}&to=${toDate}&token=${FINNHUB_API_KEY}`
     );
 
     if (!response.ok) {
@@ -1620,6 +1881,13 @@ export async function getQuotes(symbols) {
 /**
  * Fetch historical bars from Alpaca (6 months of daily data)
  */
+/**
+ * Daily bars for a symbol, for outcome evaluation. Same cache as the scanner.
+ */
+export async function getDailyBars(symbol) {
+  return fetchHistoricalData(symbol);
+}
+
 async function fetchHistoricalData(symbol) {
   const upperSymbol = symbol.toUpperCase();
 
@@ -1655,11 +1923,20 @@ async function fetchHistoricalData(symbol) {
       barArray.push(bar);
     }
 
+    // Drop today's bar while the session is still running.
+    //
+    // This is the root of the "analysis instability" the caching, hysteresis
+    // and deadband layers were built to hide: an in-progress daily bar changes
+    // every minute, so SMA/RSI/ATR computed over it drift all day and the
+    // verdict flips between refreshes. Indicators must only see closed bars.
+    const droppedPartialBar = dropPartialTodayBar(barArray);
+
     if (barArray.length < 20) {
       throw new Error(`Insufficient data: only ${barArray.length} bars`);
     }
 
     const data = {
+      excludesPartialBar: droppedPartialBar,
       closes: barArray.map(b => b.ClosePrice),
       volumes: barArray.map(b => b.Volume),
       highs: barArray.map(b => b.HighPrice),
@@ -1695,7 +1972,7 @@ async function fetchHistoricalData(symbol) {
 // BATTLE PLAN GENERATOR
 // =====================
 
-function generateBattlePlan(analysis) {
+function generateBattlePlan(analysis, account) {
   const price = analysis.price;
   const rsi = analysis.rsi;
   const volumeRatio = analysis.volumeRatio;
@@ -1856,7 +2133,10 @@ function generateBattlePlan(analysis) {
   }
 
   // Check Analyst Divergence (informational, lighter penalty)
-  const analystDivergence = checkAnalystDivergence('BUY_NOW', analystData);
+  const analystDivergence = checkAnalystDivergence({
+    systemBullish: passesAllFilters,
+    systemBearish: !filterResults.trendFilter || crossoverData.deathCross || fallingKnifeData.isFallingKnife
+  }, analystData);
   if (analystDivergence.hasDivergence) {
     confidenceScore -= 15;
     warnings.push(analystDivergence.warning);
@@ -1871,6 +2151,12 @@ function generateBattlePlan(analysis) {
   } else if (earningsData.earningsRisk === 'medium') {
     confidenceScore -= 10;
     warnings.push(`Earnings in ${earningsData.daysUntilEarnings} days (${earningsData.nextEarningsDate})`);
+  } else if (earningsData.earningsRisk === 'unknown') {
+    // Fail closed. 'unknown' means the earnings lookup failed or was skipped,
+    // and it previously matched no branch at all - so an API hiccup silently
+    // removed the earnings protection instead of flagging it.
+    confidenceScore -= 15;
+    warnings.push('EARNINGS DATE UNKNOWN: could not verify whether earnings are imminent');
   }
 
   // BONUSES for strong conditions
@@ -1939,16 +2225,16 @@ function generateBattlePlan(analysis) {
     reasoning = `STRONG BEARISH DIVERGENCE: Price making higher highs but RSI declining (${divergenceData.earlierRSI} → ${divergenceData.recentRSI}). This often precedes reversals.`;
   }
   // Priority 3: Conditional signals
-  else if (passesAllFilters && confidenceScore >= 60) {
+  else if (passesAllFilters && confidenceScore >= SCORE_BUY_NOW) {
     verdict = 'BUY_NOW';
-    reasoning = `Strong setup: ${crossoverData.goldenCross ? 'Golden Cross confirmed, ' : ''}Price above SMA50, RSI at ${rsi} (healthy momentum), volume ${(volumeRatio * 100).toFixed(0)}% of average.`;
-    if (volatilityData.isHighVolatility) {
-      reasoning += ` Note: High volatility - consider smaller position size.`;
+    if (confidenceScore >= SCORE_STRONG_SETUP) {
+      reasoning = `Strong setup: ${crossoverData.goldenCross ? 'Golden Cross confirmed, ' : ''}Price above SMA50, RSI at ${rsi} (healthy momentum), volume ${(volumeRatio * 100).toFixed(0)}% of average.`;
+      if (volatilityData.isHighVolatility) {
+        reasoning += ` Note: High volatility - consider smaller position size.`;
+      }
+    } else {
+      reasoning = `Filters pass with moderate confidence. RSI at ${rsi}, volume ${(volumeRatio * 100).toFixed(0)}% of average.`;
     }
-  }
-  else if (passesAllFilters && confidenceScore >= 50) { // Stabilization #3: Raised from 45 to 50
-    verdict = 'BUY_NOW';
-    reasoning = `Filters pass with moderate confidence. RSI at ${rsi}, volume ${(volumeRatio * 100).toFixed(0)}% of average.`;
   }
   // Priority 3.5: FALSE POSITIVE WARNINGS (milder cases - Item 5)
   else if (bullTrapData.isBullTrap) {
@@ -1997,15 +2283,26 @@ function generateBattlePlan(analysis) {
       reasoning = `Some positive signals but not all criteria met for high-confidence entry.`;
     }
   }
+  // A score at or below zero means the penalties outweighed every positive
+  // signal. That used to fall through to WATCH, so a stock scoring -80 was
+  // presented the same way as one scoring 45.
+  else if (confidenceScore <= SCORE_AVOID) {
+    verdict = 'AVOID';
+    reasoning = warnings.length
+      ? `Risk factors outweigh the setup: ${warnings.slice(0, 2).join('. ')}.`
+      : `Risk factors outweigh the setup. Not a candidate at this price.`;
+  }
   else {
     verdict = 'WATCH';
     reasoning = `Monitoring for better entry conditions. Current setup lacks sufficient confirmation.`;
   }
 
-  // Set confidence level (adjusted thresholds)
-  if (confidenceScore >= 70) {
+  // Confidence label shares the verdict's scale, so a BUY_NOW can never be
+  // labelled "Low" - which is exactly what happened when these ran on
+  // independent thresholds (verdict at 47, label at 50).
+  if (confidenceScore >= SCORE_HIGH_CONFIDENCE) {
     confidence = 'High';
-  } else if (confidenceScore >= 50) {
+  } else if (confidenceScore >= SCORE_BUY_NOW) {
     confidence = 'Medium';
   } else {
     confidence = 'Low';
@@ -2091,16 +2388,12 @@ function generateBattlePlan(analysis) {
     whyFactors.push(`📊 ANALYST DIVERGENCE: ${analystDivergence.analystConsensus} vs our signal`);
   }
 
-  // Position sizing (adjusted for volatility)
-  const basePositionValue = 5000;
-  const adjustedPositionValue = basePositionValue * (volatilityData.riskMultiplier || 1);
-  const suggestedShares = Math.floor(adjustedPositionValue / price);
-  const suggestedInvestment = parseFloat((suggestedShares * price).toFixed(2));
-
   return {
     verdict,
     confidence,
-    confidenceScore,
+    // Published as a 0-100 value because the UI renders it as a percentage.
+    confidenceScore: clampScore(confidenceScore),
+    rawConfidenceScore: Math.round(confidenceScore),
     reasoning,
     warnings, // NEW: Array of risk warnings
     whyFactors,
@@ -2162,23 +2455,64 @@ function generateBattlePlan(analysis) {
       volatilityPercent: strategy.volatilityPercent,
       atr: strategy.atr
     },
-    suggestedPosition: {
-      shares: suggestedShares,
-      investment: suggestedInvestment,
-      maxRisk: parseFloat((suggestedShares * lossPerShare).toFixed(2)),
-      maxProfit: parseFloat((suggestedShares * profitPerShare).toFixed(2)),
-      // Net Profit Calculation (After Fees & Tax)
-      grossProfit: parseFloat((suggestedShares * profitPerShare).toFixed(2)),
-      totalCommission: TOTAL_COMMISSION,
-      profitAfterFees: parseFloat((suggestedShares * profitPerShare - TOTAL_COMMISSION).toFixed(2)),
-      taxAmount: parseFloat(
-        Math.max(0, (suggestedShares * profitPerShare - TOTAL_COMMISSION) * TAX_RATE).toFixed(2)
-      ),
-      netProfit: parseFloat(
-        Math.max(0, (suggestedShares * profitPerShare - TOTAL_COMMISSION) * (1 - TAX_RATE)).toFixed(2)
-      ),
-      taxRate: TAX_RATE
-    }
+    suggestedPosition: buildSuggestedPosition({ price, profitPerShare, lossPerShare, account })
+  };
+}
+
+/**
+ * Share count plus the full economics of the round trip.
+ *
+ * Exported so the scan cache can be re-costed in place when a risk setting
+ * changes, without re-running a 17-minute scan or duplicating this maths.
+ */
+export function buildSuggestedPosition({ price, profitPerShare, lossPerShare, account }) {
+  // Solved from the stop distance and the account's risk budget, not a fixed
+  // dollar amount.
+  //
+  // Note there is no separate volatility shrink factor any more. It used to
+  // multiply the position down for volatile names on top of an already-wider
+  // ATR stop, which double-counted volatility. Risk-based sizing normalises it
+  // once, through lossPerShare.
+  const sizing = calculatePositionSize({ price, lossPerShare, account });
+  const suggestedShares = sizing.shares;
+  const suggestedInvestment = parseFloat((suggestedShares * price).toFixed(2));
+
+  // Model the actual round trip: entry and exit are each charged
+  // max($7.50, 0.1% of notional), not a flat $15.
+  const grossProfit = suggestedShares * profitPerShare;
+  // No position means no fees - don't report a -$15 loss on a trade the
+  // rules just declined to size.
+  const roundTripCommission = suggestedShares > 0
+    ? calculateCommission(suggestedShares * price) +
+      calculateCommission(suggestedShares * (price + profitPerShare))
+    : 0;
+  const profitAfterFees = grossProfit - roundTripCommission;
+  // Tax applies only to a real gain; fees are deductible against it.
+  const taxAmount = profitAfterFees > 0 ? profitAfterFees * TAX_RATE : 0;
+
+  return {
+    shares: suggestedShares,
+    investment: suggestedInvestment,
+    // Why the size is what it is: 'risk' (the intended case), or the
+    // constraint that cut it down.
+    limitedBy: sizing.limitedBy,
+    riskBudget: sizing.riskBudget,
+    riskPercentOfEquity: sizing.riskPercentOfEquity,
+    equityUsed: parseFloat((account?.equity || 0).toFixed(2)),
+    maxRisk: parseFloat((suggestedShares * lossPerShare + roundTripCommission).toFixed(2)),
+    maxProfit: parseFloat(grossProfit.toFixed(2)),
+    grossProfit: parseFloat(grossProfit.toFixed(2)),
+    totalCommission: parseFloat(roundTripCommission.toFixed(2)),
+    profitAfterFees: parseFloat(profitAfterFees.toFixed(2)),
+    taxAmount: parseFloat(taxAmount.toFixed(2)),
+    // Not floored at zero: a plan that loses money after fees must say so.
+    netProfit: parseFloat((profitAfterFees - taxAmount).toFixed(2)),
+    // Move needed just to break even on fees - the number that tells you
+    // whether a position is too small to be worth opening.
+    breakEvenPercent: suggestedInvestment > 0
+      ? parseFloat(((roundTripCommission / suggestedInvestment) * 100).toFixed(2))
+      : 0,
+    taxRate: TAX_RATE
   };
 }
 
@@ -2199,11 +2533,24 @@ export async function analyzeStock(symbol) {
     const historical = await fetchHistoricalData(symbol);
     const hasRealData = historical !== null && historical.isReal === true;
 
-    // Fetch Wall Street analyst ratings and earnings calendar from Finnhub
-    const [analystData, earningsData] = await Promise.all([
-      fetchAnalystRatings(symbol),
-      fetchEarningsCalendar(symbol)
-    ]);
+    // Only fetch Finnhub data if stock passes basic filters (saves rate-limited API calls)
+    const quickTrendCheck = historical && historical.closes && historical.closes.length >= 50;
+    const quickSma50 = quickTrendCheck ? historical.closes.slice(-50).reduce((a, b) => a + b, 0) / 50 : 0;
+    const worthFetchingFinnhub = quote.price > 10 && (!quickTrendCheck || quote.price > quickSma50 * 0.95);
+
+    let analystData = null;
+    let earningsData = null;
+    if (worthFetchingFinnhub) {
+      [analystData, earningsData] = await Promise.all([
+        fetchAnalystRatings(symbol),
+        fetchEarningsCalendar(symbol)
+      ]);
+    } else {
+      const cachedAnalyst = analystCache.get(symbol.toUpperCase());
+      const cachedEarnings = earningsCache.get(symbol.toUpperCase());
+      analystData = cachedAnalyst ? cachedAnalyst.data : null;
+      earningsData = cachedEarnings ? cachedEarnings.data : null;
+    }
 
     let sma20 = null;
     let sma50 = null;
@@ -2288,7 +2635,19 @@ export async function analyzeStock(symbol) {
 
     // ENHANCED Filter criteria with safety checks
     const trendFilter = isUptrend && !crossoverData.deathCross; // Must be uptrend AND not in death cross
-    const momentumFilter = rsi !== null && rsi >= 48 && rsi <= 72; // Stabilization #2: Widened from 50-70 to reduce edge-case flipping
+    // Stabilization #2: Deadband RSI filter - enter at 48-72, exit at 45/75
+    const RSI_ENTER_LOW = 48, RSI_ENTER_HIGH = 72;
+    const RSI_EXIT_LOW = 45, RSI_EXIT_HIGH = 75;
+    const prevPassedRSI = rsiFilterHistory.get(symbol.toUpperCase());
+    let momentumFilter;
+    if (rsi === null) {
+      momentumFilter = false;
+    } else if (prevPassedRSI) {
+      momentumFilter = rsi >= RSI_EXIT_LOW && rsi <= RSI_EXIT_HIGH;
+    } else {
+      momentumFilter = rsi >= RSI_ENTER_LOW && rsi <= RSI_ENTER_HIGH;
+    }
+    rsiFilterHistory.set(symbol.toUpperCase(), momentumFilter);
     const volumeFilter = volumeRatio >= 1.10;
     const priceFilter = quote.price > 10;
     const safetyFilter = !fallingKnifeData.isFallingKnife && !isStaleData; // No falling knives, no stale data
@@ -2338,8 +2697,10 @@ export async function analyzeStock(symbol) {
       }
     };
 
-    // Generate battle plan
-    const battlePlan = generateBattlePlan(analysis);
+    // Generate battle plan. The account context drives position sizing and is
+    // cached, so a full scan reads the portfolio once rather than per symbol.
+    const account = await getAccountContext();
+    const battlePlan = generateBattlePlan(analysis, account);
 
     // Apply hysteresis (Stabilization #1): Require 2 consecutive BUY_NOW scans
     // SKIP hysteresis when market is closed - it's meant for live trading flickering prevention
@@ -2416,22 +2777,47 @@ export async function scanMarket(symbols = DEFAULT_STOCKS) {
 
   // When market is closed, return cached results for consistency
   // This prevents different results on each refresh when prices aren't changing
+  // If no in-memory cache (e.g. after restart), try Firestore
+  if (!lastScanResults || lastScanResults.length === 0) {
+    const firestoreCache = await loadScanCacheFromFirestore();
+    if (firestoreCache && firestoreCache.results.length > 0) {
+      lastScanResults = firestoreCache.results;
+      lastScanTimestamp = firestoreCache.timestamp;
+    }
+  }
+
+  // While the market is closed the underlying bars don't change, so serving the
+  // last scan is correct - but only for a while. This used to be permanent,
+  // which meant the evening refresh never picked up the day's closing data.
   if (!marketStatus.isOpen && lastScanResults && lastScanResults.length > 0) {
-    console.log(`📦 Market closed - returning cached scan results (${lastScanResults.length} stocks)`);
-    return lastScanResults;
+    const age = Date.now() - (lastScanTimestamp || 0);
+    if (age < SCAN_CACHE_TTL_MARKET_CLOSED) {
+      console.log(`📦 Market closed - returning cached scan results (${lastScanResults.length} stocks, age: ${Math.round(age / 60000)}min)`);
+      return lastScanResults;
+    }
+    console.log(`♻️  Market closed but cached scan is ${Math.round(age / 60000)}min old - rescanning`);
   }
 
   // Market is open OR no cached results - perform fresh scan
   const results = [];
+  const previousResultsMap = new Map();
+  if (lastScanResults) {
+    for (const r of lastScanResults) previousResultsMap.set(r.symbol, r);
+  }
 
   for (const symbol of symbols) {
     try {
       const analysis = await analyzeStock(symbol);
       if (analysis) {
         results.push(analysis);
+      } else if (previousResultsMap.has(symbol.toUpperCase())) {
+        results.push({ ...previousResultsMap.get(symbol.toUpperCase()), isStaleData: true });
       }
     } catch (e) {
       console.error(`[${symbol}] Failed:`, e.message);
+      if (previousResultsMap.has(symbol.toUpperCase())) {
+        results.push({ ...previousResultsMap.get(symbol.toUpperCase()), isStaleData: true });
+      }
     }
   }
 
@@ -2441,16 +2827,34 @@ export async function scanMarket(symbols = DEFAULT_STOCKS) {
   console.log(`With real data: ${withRealData}/${results.length}`);
   console.log(`========================================\n`);
 
-  // Sort by verdict priority, then confidence score, then symbol (for deterministic order)
+  // Sort by verdict priority, then score, then how shallow the entry is
   const verdictPriority = { 'BUY_NOW': 0, 'WAIT_FOR_DIP': 1, 'WATCH': 2, 'AVOID': 3 };
+
+  // Percent above SMA20; lower is a better dip-buy entry. Stocks without an
+  // SMA20 sort last rather than jumping the queue.
+  const dipDistance = (r) => {
+    if (!r.sma20 || !r.price) return Number.POSITIVE_INFINITY;
+    return ((r.price - r.sma20) / r.sma20) * 100;
+  };
 
   const sortedResults = results.sort((a, b) => {
     const aPriority = verdictPriority[a.battlePlan.verdict] ?? 4;
     const bPriority = verdictPriority[b.battlePlan.verdict] ?? 4;
     if (aPriority !== bPriority) return aPriority - bPriority;
-    if (b.battlePlan.confidenceScore !== a.battlePlan.confidenceScore) {
-      return b.battlePlan.confidenceScore - a.battlePlan.confidenceScore;
-    }
+
+    // Rank on the raw score, not the clamped display value - otherwise every
+    // result at or below zero ties and falls back to alphabetical order.
+    const aScore = a.battlePlan.rawConfidenceScore ?? a.battlePlan.confidenceScore;
+    const bScore = b.battlePlan.rawConfidenceScore ?? b.battlePlan.confidenceScore;
+    if (bScore !== aScore) return bScore - aScore;
+
+    // Among equally-scored candidates, prefer the shallower entry: the one
+    // closest to (or below) its SMA20. This "best dip first" ordering was the
+    // core of the original scanner and was lost in the Node rewrite.
+    const aDip = dipDistance(a);
+    const bDip = dipDistance(b);
+    if (aDip !== bDip) return aDip - bDip;
+
     // Final tiebreaker: symbol name (alphabetical) for deterministic order
     return a.symbol.localeCompare(b.symbol);
   });
@@ -2459,6 +2863,13 @@ export async function scanMarket(symbols = DEFAULT_STOCKS) {
   lastScanResults = sortedResults;
   lastScanTimestamp = Date.now();
   lastMarketOpenState = marketStatus.isOpen;
+
+  // Persist to Firestore (async, non-blocking)
+  persistScanCache(sortedResults).catch((e) => console.error('persistScanCache failed:', e.message));
+
+  // Append this scan's actionable calls to the recommendation log, so their
+  // outcomes can be measured later.
+  logRecommendations(sortedResults).catch((e) => console.error('logRecommendations failed:', e.message));
 
   return sortedResults;
 }

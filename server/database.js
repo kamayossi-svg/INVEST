@@ -1,5 +1,6 @@
 import { db } from './firestore.js';
 import { FieldValue } from 'firebase-admin/firestore';
+import { v4 as uuidv4 } from 'uuid';
 
 // Collection references
 const portfolioRef = db.collection('portfolio').doc('main');
@@ -35,6 +36,21 @@ export async function updateCash(newCash) {
     updatedAt: new Date().toISOString()
   });
   return getPortfolio();
+}
+
+/**
+ * Apply a relative change to cash atomically.
+ *
+ * Prefer this over updateCash() for every trade. Read-then-write loses updates
+ * when a manual trade and an automatic TP/SL exit land at the same moment.
+ */
+export async function adjustCash(delta) {
+  await portfolioRef.update({
+    cash: FieldValue.increment(delta),
+    updatedAt: new Date().toISOString()
+  });
+  const portfolio = await getPortfolio();
+  return portfolio.cash;
 }
 
 export async function addCommission(amount) {
@@ -86,7 +102,7 @@ export async function getHolding(symbol) {
   return doc.exists ? doc.data() : undefined;
 }
 
-export async function upsertHolding(symbol, shares, avgCost, takeProfit = null, stopLoss = null) {
+export async function upsertHolding(symbol, shares, avgCost, takeProfit = null, stopLoss = null, avgCommissionPerShare = null) {
   const upperSymbol = symbol.toUpperCase();
   const docRef = holdingsRef.doc(upperSymbol);
 
@@ -104,13 +120,16 @@ export async function upsertHolding(symbol, shares, avgCost, takeProfit = null, 
     };
     if (takeProfit !== null) updateData.take_profit = takeProfit;
     if (stopLoss !== null) updateData.stop_loss = stopLoss;
+    // Buy-side commission per share, needed to compute the taxable gain on exit.
+    if (avgCommissionPerShare !== null) updateData.avg_commission_per_share = avgCommissionPerShare;
     await docRef.update(updateData);
   } else {
     await docRef.set({
-      id: Date.now(),
+      id: uuidv4(),
       symbol: upperSymbol,
       shares,
       avg_cost: avgCost,
+      avg_commission_per_share: avgCommissionPerShare ?? 0,
       take_profit: takeProfit,
       stop_loss: stopLoss,
       createdAt: new Date().toISOString(),
@@ -173,15 +192,17 @@ export async function removeFromWatchlist(symbol) {
 
 // ---- Alert Functions ----
 
-export async function getAlerts(includeRead = false) {
-  let query;
-  if (includeRead) {
-    query = alertsRef.orderBy('created_at', 'desc');
-  } else {
-    query = alertsRef.where('read', '==', false).orderBy('created_at', 'desc');
-  }
-  const snapshot = await query.get();
-  return snapshot.docs.map(doc => doc.data());
+export async function getAlerts(includeRead = false, limit = 200) {
+  // Order in Firestore, filter in memory.
+  //
+  // `where('read','==',false).orderBy('created_at')` needs a composite index
+  // that has never existed in this project, so the unread-alerts query - which
+  // the UI polls every 30 seconds - failed with FAILED_PRECONDITION every time.
+  // Alert volume is small, so filtering here costs nothing and removes the
+  // dependency on an index that isn't in the repo.
+  const snapshot = await alertsRef.orderBy('created_at', 'desc').limit(limit).get();
+  const alerts = snapshot.docs.map(doc => doc.data());
+  return includeRead ? alerts : alerts.filter(a => !a.read);
 }
 
 export async function addAlert(alert) {

@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import type { Trade } from '../types';
 import { useLanguage } from '../i18n';
+import TradeDetailModal from './TradeDetailModal';
 
 interface TradeHistoryProps {
   trades: Trade[];
@@ -26,12 +28,26 @@ function formatDate(dateString: string): string {
   });
 }
 
-function TradeCard({ trade }: { trade: Trade }) {
+/** Find the most recent BUY trade for a given SELL trade's symbol that happened before the sell */
+function findMatchingBuy(sellTrade: Trade, allTrades: Trade[]): Trade | null {
+  return allTrades.find(
+    t => t.action === 'BUY' &&
+         t.symbol === sellTrade.symbol &&
+         new Date(t.executed_at) < new Date(sellTrade.executed_at)
+  ) || null;
+}
+
+function TradeCard({ trade, onClick }: { trade: Trade; onClick?: () => void }) {
   const { t } = useLanguage();
   const isBuy = trade.action === 'BUY';
+  const isSell = trade.action === 'SELL';
+  const netPL = trade.netRealizedPL;
 
   return (
-    <div className="bg-gray-800 rounded-xl p-4 border border-gray-700">
+    <div
+      className={`bg-gray-800 rounded-xl p-4 border border-gray-700 ${isSell ? 'cursor-pointer hover:border-gray-500 hover:bg-gray-750 transition-colors' : ''}`}
+      onClick={isSell ? onClick : undefined}
+    >
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-3">
           <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg ${
@@ -44,10 +60,17 @@ function TradeCard({ trade }: { trade: Trade }) {
             <p className="text-xs text-gray-500">{formatDate(trade.executed_at)}</p>
           </div>
         </div>
-        <div className={`px-3 py-1 rounded-full text-xs font-medium ${
-          isBuy ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-        }`}>
-          {isBuy ? t('bought') : t('sold')}
+        <div className="flex items-center gap-2">
+          <div className={`px-3 py-1 rounded-full text-xs font-medium ${
+            isBuy ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+          }`}>
+            {isBuy ? t('bought') : t('sold')}
+          </div>
+          {isSell && (
+            <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          )}
         </div>
       </div>
 
@@ -73,13 +96,25 @@ function TradeCard({ trade }: { trade: Trade }) {
           {t('planTakeProfitAt')} {formatCurrency(trade.take_profit)} {t('stopLossAt')} {formatCurrency(trade.stop_loss)}
         </div>
       )}
+
+      {isSell && netPL !== undefined && (
+        <div className={`mt-3 pt-3 border-t border-gray-700 flex items-center justify-between`}>
+          <span className="text-xs text-gray-500">{t('netProfit')}</span>
+          <span className={`text-sm font-semibold ${netPL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            {netPL >= 0 ? '+' : ''}{formatCurrency(netPL)}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
 
 export default function TradeHistory({ trades, loading, onRefresh }: TradeHistoryProps) {
   const { t } = useLanguage();
+  const [selectedSellTrade, setSelectedSellTrade] = useState<Trade | null>(null);
   const recentTrades = trades.slice(0, 10);
+
+  const matchingBuy = selectedSellTrade ? findMatchingBuy(selectedSellTrade, trades) : null;
 
   return (
     <div className="space-y-4">
@@ -112,7 +147,11 @@ export default function TradeHistory({ trades, loading, onRefresh }: TradeHistor
       {recentTrades.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {recentTrades.map((trade) => (
-            <TradeCard key={trade.id} trade={trade} />
+            <TradeCard
+              key={trade.id}
+              trade={trade}
+              onClick={trade.action === 'SELL' ? () => setSelectedSellTrade(trade) : undefined}
+            />
           ))}
         </div>
       ) : (
@@ -129,6 +168,14 @@ export default function TradeHistory({ trades, loading, onRefresh }: TradeHistor
         <p className="text-center text-gray-500 text-sm">
           {t('showingRecentTrades')} {trades.length} {t('totalTrades')}
         </p>
+      )}
+
+      {selectedSellTrade && (
+        <TradeDetailModal
+          sellTrade={selectedSellTrade}
+          buyTrade={matchingBuy}
+          onClose={() => setSelectedSellTrade(null)}
+        />
       )}
     </div>
   );
