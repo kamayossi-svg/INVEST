@@ -67,12 +67,19 @@ const PORT = process.env.PORT || 3001;
 
 // CORS: an allowlist, not a wildcard. With no auth and `cors()` open to every
 // origin, any website a browser visited could have driven this portfolio.
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
+//
+// Scoped to /api deliberately. Applied app-wide it also gated the static
+// bundle this server serves at its own origin, so opening the app on port 3001
+// had its JS and CSS rejected with "Origin not allowed" and rendered nothing.
+// CORS protects the API; static assets do not need it.
+const allowedOrigins = (
+  process.env.ALLOWED_ORIGINS || `http://localhost:5173,http://localhost:${PORT}`
+)
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
 
-app.use(cors({
+app.use('/api', cors({
   origin(origin, callback) {
     // Same-origin requests (the production build served by this server) and
     // non-browser clients send no Origin header.
