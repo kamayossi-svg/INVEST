@@ -132,12 +132,32 @@ export async function upsertHolding(symbol, shares, avgCost, takeProfit = null, 
       avg_commission_per_share: avgCommissionPerShare ?? 0,
       take_profit: takeProfit,
       stop_loss: stopLoss,
+      // The stop the position opened with. Defines 1R for the exit manager -
+      // once stop_loss starts trailing it can no longer measure the original
+      // risk.
+      initial_stop: stopLoss,
+      // High-water mark the trailing stop anchors to.
+      highest_close: avgCost,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
   }
 
   return getHolding(upperSymbol);
+}
+
+/**
+ * Patch specific fields on an open holding.
+ *
+ * Used by the exit manager to move a stop up or record a new high-water mark,
+ * without going through upsertHolding and having to restate shares and cost.
+ */
+export async function updateHoldingFields(symbol, fields) {
+  const docRef = holdingsRef.doc(symbol.toUpperCase());
+  const existing = await docRef.get();
+  if (!existing.exists) return null;
+  await docRef.update({ ...fields, updatedAt: new Date().toISOString() });
+  return getHolding(symbol);
 }
 
 export async function deleteHolding(symbol) {

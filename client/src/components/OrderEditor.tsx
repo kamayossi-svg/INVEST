@@ -196,6 +196,8 @@ export default function OrderEditor({ stock, cash, onClose, onSuccess }: OrderEd
           .replace('{budget}', budget != null ? formatCurrency(budget) : '');
       case 'concentration':
         return t('sizedByConcentration');
+      case 'sector':
+        return t('sizedBySector');
       case 'cash':
         return t('sizedByCash');
       case 'portfolio_heat':

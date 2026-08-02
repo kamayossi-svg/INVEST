@@ -885,6 +885,10 @@ export default function Scanner({
   });
   const filteredData = allFilteredData.slice(0, MAX_DISPLAY);
   const totalScanned = displayData.length;
+
+  // The regime is a property of the scan, not of any one stock, so read it off
+  // the first result rather than showing it per row.
+  const marketRegime = displayData[0]?.battlePlan?.marketRegime ?? null;
   const totalInCategory = allFilteredData.length;
 
   // Count by verdict (use displayData)
@@ -1234,6 +1238,27 @@ export default function Scanner({
           <div className="flex items-center gap-2 mt-4">
             <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
             <span className="text-sm text-gray-600">{t('fetchingRealTime')}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Market regime applies to every result below, so it sits above them */}
+      {marketRegime && marketRegime.regime !== 'risk_on' && (
+        <div className={`rounded-xl p-4 border ${
+          marketRegime.regime === 'risk_off'
+            ? 'bg-red-500/10 border-red-500/40'
+            : 'bg-yellow-500/10 border-yellow-500/40'
+        }`}>
+          <div className="flex items-start gap-3">
+            <span className="text-xl" aria-hidden="true">
+              {marketRegime.regime === 'risk_off' ? '🌧️' : '⛅'}
+            </span>
+            <div>
+              <p className={`font-semibold ${marketRegime.regime === 'risk_off' ? 'text-red-300' : 'text-yellow-300'}`}>
+                {marketRegime.regime === 'risk_off' ? t('regimeRiskOff') : t('regimeNeutral')}
+              </p>
+              <p className="text-sm text-gray-400 mt-1">{marketRegime.reason}</p>
+            </div>
           </div>
         </div>
       )}

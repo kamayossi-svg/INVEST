@@ -296,6 +296,10 @@ export const translations = {
     recNoDataYet: 'No results yet — recommendations need time to play out before they can be scored.',
     recPendingCount: '{n} recommendation(s) logged, awaiting evaluation.',
     recExplainer: 'R is the result measured in units of the risk taken. Above 0 means the calls made money per dollar risked; a high hit rate with negative R means the winners were too small to pay for the losers.',
+    // Market regime
+    regimeRiskOff: 'Broad market in a downtrend — new entries are held back',
+    regimeNeutral: 'Broad market not confirming — entries are scored more strictly',
+    sizedBySector: 'Reduced: you already hold close to the limit in this sector.',
   },
 
   he: {
@@ -593,6 +597,10 @@ export const translations = {
     recNoDataYet: 'אין עדיין תוצאות — המלצות צריכות זמן להתפתח לפני שאפשר לנקד אותן.',
     recPendingCount: '{n} המלצות נרשמו, ממתינות להערכה.',
     recExplainer: 'R הוא התוצאה ביחידות של הסיכון שנלקח. מעל 0 = ההמלצות הרוויחו לכל דולר שסוכן. אחוז פגיעה גבוה עם R שלילי אומר שהרווחים היו קטנים מכדי לכסות את ההפסדים.',
+    // Market regime
+    regimeRiskOff: 'השוק הרחב במגמת ירידה — כניסות חדשות מוחזקות',
+    regimeNeutral: 'השוק הרחב לא מאשר — הכניסות מנוקדות בהחמרה',
+    sizedBySector: 'הוקטן: אתה כבר מחזיק קרוב למגבלה בסקטור הזה.',
   }
 } as const;
 

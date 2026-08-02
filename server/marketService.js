@@ -6,9 +6,12 @@ import Alpaca from '@alpacahq/alpaca-trade-api';
 import { calculateCommission, TAX_RATE, MIN_COMMISSION } from './tradeMath.js';
 import { getPortfolio, getHoldings } from './database.js';
 import { logRecommendations } from './recommendationLog.js';
+import { getMarketRegime, regimeAdjustment } from './marketRegime.js';
+import { strategy, ACTIVE_STRATEGY, RULESET_VERSION } from './strategyConfig.js';
 import {
   RISK_PER_TRADE_PCT,
   MAX_POSITION_PCT_OF_EQUITY,
+  MAX_SECTOR_PCT_OF_EQUITY,
   CASH_RESERVE_PCT,
   MIN_POSITION_VALUE,
   MAX_OPEN_POSITIONS,
@@ -381,10 +384,17 @@ export async function getAccountContext(force = false) {
 
     let holdingsValue = 0;
     let openRisk = 0;
+    const sectorExposure = {};
     for (const h of holdings) {
-      const cached = quoteCache.get(h.symbol?.toUpperCase());
+      const upper = h.symbol?.toUpperCase();
+      const cached = quoteCache.get(upper);
       const markPrice = cached?.data?.price ?? h.avg_cost ?? 0;
-      holdingsValue += h.shares * markPrice;
+      const positionValue = h.shares * markPrice;
+      holdingsValue += positionValue;
+
+      const sector = SECTOR_MAP[upper] || 'Unknown';
+      sectorExposure[sector] = (sectorExposure[sector] || 0) + positionValue;
+
       // What this position loses if its stop is hit from here.
       if (h.stop_loss && markPrice > h.stop_loss) {
         openRisk += h.shares * (markPrice - h.stop_loss);
@@ -397,6 +407,7 @@ export async function getAccountContext(force = false) {
       holdingsValue,
       openPositions: holdings.length,
       openRisk,
+      sectorExposure,
       isFallback: false
     };
     accountContextCache = { at: Date.now(), value };
@@ -406,7 +417,7 @@ export async function getAccountContext(force = false) {
     // Never let a Firestore hiccup stop analysis; fall back to the last known
     // value, or to a neutral one that yields conservative sizing.
     const fallback = accountContextCache?.value || {
-      cash: 0, equity: 0, holdingsValue: 0, openPositions: 0, openRisk: 0
+      cash: 0, equity: 0, holdingsValue: 0, openPositions: 0, openRisk: 0, sectorExposure: {}
     };
     return { ...fallback, isFallback: true };
   }
@@ -419,7 +430,7 @@ export async function getAccountContext(force = false) {
  * Reports which constraint bound the result so the UI can explain the number
  * instead of just showing it.
  */
-function calculatePositionSize({ price, lossPerShare, account }) {
+function calculatePositionSize({ price, lossPerShare, account, sector }) {
   const equity = account?.equity || 0;
   const cash = account?.cash || 0;
 
@@ -436,6 +447,18 @@ function calculatePositionSize({ price, lossPerShare, account }) {
   if (shares > maxByConcentration) {
     shares = maxByConcentration;
     limitedBy = 'concentration';
+  }
+
+  // Sector concentration: what's already held in this sector counts against
+  // the budget, so five semiconductor names can't stack up unnoticed.
+  if (sector) {
+    const alreadyInSector = account?.sectorExposure?.[sector] || 0;
+    const sectorHeadroom = equity * MAX_SECTOR_PCT_OF_EQUITY - alreadyInSector;
+    const maxBySector = Math.floor(sectorHeadroom / price);
+    if (shares > maxBySector) {
+      shares = Math.max(0, maxBySector);
+      limitedBy = 'sector';
+    }
   }
 
   // Never plan a position the account can't actually fund, keeping the cash
@@ -1354,7 +1377,7 @@ function checkAnalystDivergence({ systemBullish, systemBearish }, analystData) {
  * @param {number} period - Number of periods (default 14)
  * @returns {object} - ATR data including volatility factor
  */
-function calculateATR(highs, lows, closes, period = 14) {
+export function calculateATR(highs, lows, closes, period = 14) {
   if (!highs || !lows || !closes || highs.length < period + 1) {
     return null;
   }
@@ -1972,7 +1995,7 @@ async function fetchHistoricalData(symbol) {
 // BATTLE PLAN GENERATOR
 // =====================
 
-function generateBattlePlan(analysis, account) {
+function generateBattlePlan(analysis, account, marketRegime) {
   const price = analysis.price;
   const rsi = analysis.rsi;
   const volumeRatio = analysis.volumeRatio;
@@ -2159,6 +2182,13 @@ function generateBattlePlan(analysis, account) {
     warnings.push('EARNINGS DATE UNKNOWN: could not verify whether earnings are imminent');
   }
 
+  // MARKET REGIME - a stock is not scored in isolation from the tape it trades in
+  const regime = regimeAdjustment(marketRegime?.regime);
+  if (regime.penalty > 0) {
+    confidenceScore -= regime.penalty;
+    warnings.push(`${regime.warning}${marketRegime?.reason ? ` (${marketRegime.reason})` : ''}`);
+  }
+
   // BONUSES for strong conditions
   if (crossoverData.goldenCross && crossoverData.trendStrength > 2) {
     confidenceScore += 15; // Strong golden cross
@@ -2297,6 +2327,14 @@ function generateBattlePlan(analysis, account) {
     reasoning = `Monitoring for better entry conditions. Current setup lacks sufficient confirmation.`;
   }
 
+  // A broad-market downtrend caps the verdict outright. No amount of
+  // single-name strength makes a market-wide drawdown a good entry, and
+  // subtracting points alone would still let the strongest names through.
+  if (regime.maxVerdict === 'WATCH' && (verdict === 'BUY_NOW' || verdict === 'WAIT_FOR_DIP')) {
+    verdict = 'WATCH';
+    reasoning = `${regime.warning}. Setup looks fine on its own, but entries are held back until the broad market stabilises. ${reasoning}`;
+  }
+
   // Confidence label shares the verdict's scale, so a BUY_NOW can never be
   // labelled "Low" - which is exactly what happened when these ran on
   // independent thresholds (verdict at 47, label at 50).
@@ -2394,6 +2432,13 @@ function generateBattlePlan(analysis, account) {
     // Published as a 0-100 value because the UI renders it as a percentage.
     confidenceScore: clampScore(confidenceScore),
     rawConfidenceScore: Math.round(confidenceScore),
+    // Which entry rules produced this, so outcomes recorded under different
+    // rules are never pooled into one hit rate.
+    rulesetVersion: RULESET_VERSION,
+    strategyProfile: ACTIVE_STRATEGY,
+    marketRegime: marketRegime
+      ? { regime: marketRegime.regime, reason: marketRegime.reason, proxy: marketRegime.proxy }
+      : null,
     reasoning,
     warnings, // NEW: Array of risk warnings
     whyFactors,
@@ -2455,7 +2500,9 @@ function generateBattlePlan(analysis, account) {
       volatilityPercent: strategy.volatilityPercent,
       atr: strategy.atr
     },
-    suggestedPosition: buildSuggestedPosition({ price, profitPerShare, lossPerShare, account })
+    suggestedPosition: buildSuggestedPosition({
+      price, profitPerShare, lossPerShare, account, sector: analysis.sector
+    })
   };
 }
 
@@ -2465,7 +2512,7 @@ function generateBattlePlan(analysis, account) {
  * Exported so the scan cache can be re-costed in place when a risk setting
  * changes, without re-running a 17-minute scan or duplicating this maths.
  */
-export function buildSuggestedPosition({ price, profitPerShare, lossPerShare, account }) {
+export function buildSuggestedPosition({ price, profitPerShare, lossPerShare, account, sector }) {
   // Solved from the stop distance and the account's risk budget, not a fixed
   // dollar amount.
   //
@@ -2473,7 +2520,7 @@ export function buildSuggestedPosition({ price, profitPerShare, lossPerShare, ac
   // multiply the position down for volatile names on top of an already-wider
   // ATR stop, which double-counted volatility. Risk-based sizing normalises it
   // once, through lossPerShare.
-  const sizing = calculatePositionSize({ price, lossPerShare, account });
+  const sizing = calculatePositionSize({ price, lossPerShare, account, sector });
   const suggestedShares = sizing.shares;
   const suggestedInvestment = parseFloat((suggestedShares * price).toFixed(2));
 
@@ -2633,22 +2680,35 @@ export async function analyzeStock(symbol) {
     const marketCurrentlyOpen = isMarketOpen().isOpen;
     const isStaleData = quote.stale || (marketCurrentlyOpen && (Date.now() - quote.timestamp > STALE_THRESHOLD));
 
-    // ENHANCED Filter criteria with safety checks
+    // ENHANCED Filter criteria with safety checks.
+    // Entry thresholds come from the active strategy profile - see
+    // strategyConfig.js for why they are no longer inline constants.
     const trendFilter = isUptrend && !crossoverData.deathCross; // Must be uptrend AND not in death cross
-    // Stabilization #2: Deadband RSI filter - enter at 48-72, exit at 45/75
-    const RSI_ENTER_LOW = 48, RSI_ENTER_HIGH = 72;
-    const RSI_EXIT_LOW = 45, RSI_EXIT_HIGH = 75;
+
+    // Deadband on the RSI band: a symbol that already passed is held to the
+    // looser bounds, so it doesn't flicker in and out between scans.
     const prevPassedRSI = rsiFilterHistory.get(symbol.toUpperCase());
     let momentumFilter;
     if (rsi === null) {
       momentumFilter = false;
     } else if (prevPassedRSI) {
-      momentumFilter = rsi >= RSI_EXIT_LOW && rsi <= RSI_EXIT_HIGH;
+      momentumFilter = rsi >= strategy.rsiHysteresisMin && rsi <= strategy.rsiHysteresisMax;
     } else {
-      momentumFilter = rsi >= RSI_ENTER_LOW && rsi <= RSI_ENTER_HIGH;
+      momentumFilter = rsi >= strategy.rsiMin && rsi <= strategy.rsiMax;
     }
     rsiFilterHistory.set(symbol.toUpperCase(), momentumFilter);
-    const volumeFilter = volumeRatio >= 1.10;
+
+    const volumeFilter = volumeRatio >= strategy.minVolumeRatio;
+
+    // Dip profiles require the entry to still be near the SMA20; a stock that
+    // has already run away from it is not a pullback any more.
+    const percentAboveSma20 = (sma20 && quote.price)
+      ? ((quote.price - sma20) / sma20) * 100
+      : null;
+    const dipFilter = strategy.maxPercentAboveSma20 === null
+      ? true
+      : (percentAboveSma20 !== null && percentAboveSma20 <= strategy.maxPercentAboveSma20);
+
     const priceFilter = quote.price > 10;
     const safetyFilter = !fallingKnifeData.isFallingKnife && !isStaleData; // No falling knives, no stale data
 
@@ -2659,13 +2719,15 @@ export async function analyzeStock(symbol) {
                                  !overboughtData.isOverboughtExtreme &&
                                  !weakBreakoutData.isWeakBreakout;
 
-    const passesAllFilters = hasRealData && trendFilter && momentumFilter && volumeFilter && priceFilter && safetyFilter && falsePositiveFilter;
+    const passesAllFilters = hasRealData && trendFilter && momentumFilter && volumeFilter &&
+                             dipFilter && priceFilter && safetyFilter && falsePositiveFilter;
 
     // Build analysis
     const analysis = {
       ...quote,
       sma20,
       sma50,
+      distanceFromSMA20: percentAboveSma20 !== null ? parseFloat(percentAboveSma20.toFixed(2)) : null,
       rsi,
       rsiInterpretation: getRSIInterpretation(rsi),
       volumeRatio: parseFloat(volumeRatio.toFixed(2)),
@@ -2691,16 +2753,21 @@ export async function analyzeStock(symbol) {
         trendFilter,
         momentumFilter,
         volumeFilter,
+        dipFilter, // Entry still close enough to the SMA20 to be a pullback
         priceFilter,
         safetyFilter, // No falling knife, no stale data
         falsePositiveFilter // FALSE POSITIVE FILTER (Item 5)
       }
     };
 
-    // Generate battle plan. The account context drives position sizing and is
-    // cached, so a full scan reads the portfolio once rather than per symbol.
-    const account = await getAccountContext();
-    const battlePlan = generateBattlePlan(analysis, account);
+    // Generate battle plan. The account context drives position sizing and the
+    // market regime gates the verdict; both are cached, so a full scan reads
+    // them once rather than per symbol.
+    const [account, marketRegime] = await Promise.all([
+      getAccountContext(),
+      getMarketRegime(fetchHistoricalData)
+    ]);
+    const battlePlan = generateBattlePlan(analysis, account, marketRegime);
 
     // Apply hysteresis (Stabilization #1): Require 2 consecutive BUY_NOW scans
     // SKIP hysteresis when market is closed - it's meant for live trading flickering prevention

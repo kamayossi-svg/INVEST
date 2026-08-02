@@ -3,6 +3,7 @@ import {
   getHoldings,
   adjustCash,
   upsertHolding,
+  updateHoldingFields,
   addTrade,
   addAlert,
   addCommission,
@@ -10,7 +11,19 @@ import {
   addRealizedPL
 } from './database.js';
 import { calculateSell, buildSellTrade, buyCommissionPerShareFor } from './tradeMath.js';
-import { getQuote, isMarketOpen } from './marketService.js';
+import { getQuote, isMarketOpen, getDailyBars, calculateATR } from './marketService.js';
+import { evaluateExit } from './exitManager.js';
+
+/** ATR for the trailing stop distance. Bars come from the shared cache. */
+async function currentAtr(symbol) {
+  try {
+    const bars = await getDailyBars(symbol);
+    const atr = calculateATR(bars?.highs, bars?.lows, bars?.closes, 14);
+    return atr?.atr ?? null;
+  } catch {
+    return null;
+  }
+}
 
 // Check intervals in milliseconds
 const MARKET_OPEN_INTERVAL = 30000;    // 30 seconds when market is open
@@ -86,6 +99,29 @@ async function runPriceCheck() {
         console.log(`🛑 STOP LOSS triggered for ${holding.symbol}! Price: $${currentPrice} <= Stop: $${holding.stop_loss}`);
         await executeAutoExit(holding, currentPrice, 'STOP_LOSS');
         continue; // Position closed, move to next
+      }
+
+      // Neither level was hit. Manage the position: trail the stop, move it to
+      // breakeven, or close a trade whose thesis has expired.
+      const atr = await currentAtr(holding.symbol);
+      const decision = evaluateExit(holding, currentPrice, atr);
+
+      if (decision.action === 'exit') {
+        console.log(`⏱️  ${decision.exitReason} for ${holding.symbol}: ${decision.message}`);
+        await executeAutoExit(holding, currentPrice, decision.exitReason);
+        continue;
+      }
+
+      // Track the high-water mark the trailing stop anchors to.
+      const highestClose = Math.max(holding.highest_close ?? 0, currentPrice);
+      const updates = {};
+      if (highestClose !== holding.highest_close) updates.highest_close = highestClose;
+      if (decision.newStop) {
+        console.log(`🔒 ${decision.stopReason} stop for ${holding.symbol}: $${holding.stop_loss?.toFixed(2)} -> $${decision.newStop.toFixed(2)} (${decision.rMultiple.toFixed(2)}R)`);
+        updates.stop_loss = decision.newStop;
+      }
+      if (Object.keys(updates).length > 0) {
+        await updateHoldingFields(holding.symbol, updates);
       }
 
     } catch (error) {

@@ -63,6 +63,12 @@ export async function logRecommendations(results) {
         confidenceScore: bp.confidenceScore,
         rawConfidenceScore: bp.rawConfidenceScore ?? bp.confidenceScore,
 
+        // Which entry rules produced this call. Outcomes from different
+        // rulesets must never be pooled into one hit rate.
+        rulesetVersion: bp.rulesetVersion ?? 1,
+        strategyProfile: bp.strategyProfile ?? 'unknown',
+        marketRegime: bp.marketRegime?.regime ?? null,
+
         price: r.price,
         entryLow: bp.entryZone?.low ?? null,
         entryHigh: bp.entryZone?.high ?? null,
@@ -204,6 +210,7 @@ export async function getPerformanceStats() {
   const overall = blank();
   const byVerdict = {};
   const byConfidence = {};
+  const byRuleset = {};
 
   for (const doc of snapshot.docs) {
     const rec = doc.data();
@@ -213,7 +220,8 @@ export async function getPerformanceStats() {
     for (const bucket of [
       overall,
       (byVerdict[rec.verdict] ||= blank()),
-      (byConfidence[rec.confidence] ||= blank())
+      (byConfidence[rec.confidence] ||= blank()),
+      (byRuleset[`v${rec.rulesetVersion ?? 1}`] ||= blank())
     ]) {
       bucket.count++;
       if (o.hit === 'target') bucket.targetHits++;
@@ -246,6 +254,7 @@ export async function getPerformanceStats() {
     pending: pendingSnapshot.data().count,
     overall: summarise(overall),
     byVerdict: Object.fromEntries(Object.entries(byVerdict).map(([k, v]) => [k, summarise(v)])),
-    byConfidence: Object.fromEntries(Object.entries(byConfidence).map(([k, v]) => [k, summarise(v)]))
+    byConfidence: Object.fromEntries(Object.entries(byConfidence).map(([k, v]) => [k, summarise(v)])),
+    byRuleset: Object.fromEntries(Object.entries(byRuleset).map(([k, v]) => [k, summarise(v)]))
   };
 }

@@ -40,6 +40,15 @@ export const MAX_POSITION_PCT_OF_EQUITY = 0.20;
 export const CASH_RESERVE_PCT = 0.05;
 
 /**
+ * Maximum share of equity in any one sector.
+ *
+ * Sector was tracked on every quote and used purely for display, so nothing
+ * stopped the top of a scan being five semiconductor names in a row. Ten
+ * positions in one sector is one bet wearing a diversification costume.
+ */
+export const MAX_SECTOR_PCT_OF_EQUITY = 0.30;
+
+/**
  * Below this notional the round-trip commission is a meaningful drag
  * ($15 on $1,500 is a 1% hurdle before the trade even starts).
  */
@@ -60,3 +69,35 @@ export const MAX_OPEN_POSITIONS = 12;
  * trade this allows roughly 10 fully-risked positions at once.
  */
 export const MAX_PORTFOLIO_HEAT_PCT = 0.10;
+
+// =====================
+// EXIT MANAGEMENT
+// =====================
+// The entry logic had eleven detectors; the exit was a fixed target and a fixed
+// stop, with no trailing, no breakeven move and no time limit. In swing
+// trading most of the edge lives in the exit.
+
+/**
+ * Once the trade is up this many multiples of the initial risk, move the stop
+ * to the entry price. Turns a winner into a free trade.
+ */
+export const BREAKEVEN_TRIGGER_R = 1.0;
+
+/**
+ * Beyond this many R, trail the stop at TRAILING_STOP_ATR_MULTIPLE ATRs below
+ * the highest close since entry.
+ */
+export const TRAILING_TRIGGER_R = 1.5;
+export const TRAILING_STOP_ATR_MULTIPLE = 2.0;
+
+/**
+ * Close a position that has gone nowhere after this many trading days.
+ *
+ * A swing thesis is a 2-10 day idea. Past that the setup that justified the
+ * entry has expired whether or not price hit a level, and the capital is
+ * better used elsewhere.
+ */
+export const TIME_STOP_TRADING_DAYS = 15;
+
+/** A time stop only fires if the trade is within this band of the entry. */
+export const TIME_STOP_MAX_MOVE_PCT = 3;

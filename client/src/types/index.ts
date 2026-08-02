@@ -75,6 +75,7 @@ export interface RiskReward {
 export type PositionLimitReason =
   | 'risk'
   | 'concentration'
+  | 'sector'
   | 'cash'
   | 'portfolio_heat'
   | 'max_positions'
@@ -105,13 +106,21 @@ export interface SuggestedPosition {
   taxRate?: number;
 }
 
+/** Broad-market conditions the whole scan is being judged against. */
+export interface MarketRegime {
+  regime: 'risk_on' | 'neutral' | 'risk_off';
+  reason: string;
+  proxy: string;
+}
+
 export type Verdict = 'BUY_NOW' | 'WAIT_FOR_DIP' | 'WATCH' | 'AVOID';
 export type Confidence = 'High' | 'Medium' | 'Low';
 
 export interface FilterResults {
   trendFilter: boolean;      // Price > SMA 50
-  momentumFilter: boolean;   // RSI 48-72 (stabilized)
-  volumeFilter: boolean;     // Volume > 110% avg
+  momentumFilter: boolean;   // RSI inside the active strategy's band
+  volumeFilter: boolean;     // Volume vs the active strategy's threshold
+  dipFilter?: boolean;       // Entry still near the SMA20 (dip profiles only)
   priceFilter: boolean;      // Price > $10
   safetyFilter?: boolean;    // No falling knife, no stale data
   falsePositiveFilter?: boolean; // No bull trap, divergence, extension, etc.
@@ -190,6 +199,10 @@ export interface BattlePlan {
   confidenceScore: number;
   /** Unclamped score (roughly -300..130), used for ranking and debugging. */
   rawConfidenceScore?: number;
+  /** Entry-rule version these results were produced under. */
+  rulesetVersion?: number;
+  strategyProfile?: string;
+  marketRegime?: MarketRegime | null;
   reasoning: string;
   whyFactors: string[];
   warnings?: string[];

@@ -222,6 +222,8 @@ export interface RecommendationStats {
   overall: PerformanceBucket;
   byVerdict: Record<string, PerformanceBucket>;
   byConfidence: Record<string, PerformanceBucket>;
+  /** Keyed by ruleset version, so calls made under different entry rules stay separate. */
+  byRuleset?: Record<string, PerformanceBucket>;
 }
 
 /** Whether the scanner's own past calls actually worked. */
