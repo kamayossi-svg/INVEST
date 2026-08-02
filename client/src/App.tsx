@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useMarketScan, usePortfolio, useTrades, useAlerts } from './hooks/useApi';
 import { useLanguage } from './i18n';
-import { AuthProvider, useAuth } from './firebase/AuthContext';
+import { AuthProvider, useAuth } from './auth/AuthContext';
 import Scanner from './components/Scanner';
 import Portfolio from './components/Portfolio';
 import TradeHistory from './components/TradeHistory';
@@ -19,17 +19,17 @@ function AppContent() {
   const trades = useTrades();
   const alerts = useAlerts();
   const { t, isRTL } = useLanguage();
-  const { user, logout } = useAuth();
+  const { isAuthenticated, logout } = useAuth();
 
   // Initial load
   useEffect(() => {
-    if (user) {
+    if (isAuthenticated) {
       market.scan();
       portfolio.refresh();
       trades.refresh();
       alerts.refresh();
     }
-  }, [user]);
+  }, [isAuthenticated]);
 
   // Refresh data after trade
   const handleTradeComplete = useCallback(() => {
@@ -41,7 +41,7 @@ function AppContent() {
 
   // Auto-refresh every 30 seconds
   useEffect(() => {
-    if (!user) return;
+    if (!isAuthenticated) return;
 
     const interval = setInterval(() => {
       if (activeTab === 'scanner') {
@@ -51,16 +51,9 @@ function AppContent() {
       }
     }, 30000);
     return () => clearInterval(interval);
-  }, [activeTab, market, portfolio, user]);
+  }, [activeTab, market, portfolio, isAuthenticated]);
 
-  // Handle logout
-  const handleLogout = async () => {
-    try {
-      await logout();
-    } catch {
-      // Error handled by AuthContext
-    }
-  };
+  const handleLogout = () => logout();
 
   return (
     <div className={`min-h-screen bg-gray-900 ${isRTL ? 'rtl' : 'ltr'}`}>
@@ -119,9 +112,6 @@ function AppContent() {
 
           {/* User info and logout button - Desktop only */}
           <div className="flex items-center gap-4">
-            <span className="text-gray-400 text-sm">
-              {user?.email}
-            </span>
             <button
               onClick={handleLogout}
               className="text-gray-400 hover:text-red-400 text-sm transition-colors flex items-center gap-1"
@@ -278,7 +268,7 @@ function AppContent() {
 
 // App wrapper with authentication
 function App() {
-  const { user, loading } = useAuth();
+  const { isAuthenticated, loading } = useAuth();
 
   // Show loading spinner while checking auth state
   if (loading) {
@@ -295,7 +285,7 @@ function App() {
   }
 
   // Show login page if not authenticated
-  if (!user) {
+  if (!isAuthenticated) {
     return <LoginPage />;
   }
 

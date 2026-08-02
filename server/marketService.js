@@ -494,11 +494,59 @@ function calculatePositionSize({ price, lossPerShare, account, sector }) {
   };
 }
 
-// Scan results cache for market-closed consistency
-const SCAN_CACHE_TTL_MARKET_CLOSED = 4 * 3600000; // 4 hours
+// Scan results cache for market-closed consistency.
+//
+// While the market is shut the underlying bars cannot change, so a fixed TTL
+// just forces a pointless 17-minute rescan - a 4-hour TTL expired three times
+// over a weekend and made the scanner hang every time. The cache is instead
+// valid until the next session, i.e. as long as it was taken after the most
+// recent close.
 let lastScanResults = null;
 let lastScanTimestamp = null;
 let lastMarketOpenState = null;
+/** Promise of the scan currently running, so concurrent callers share it. */
+let scanInFlight = null;
+
+/**
+ * Epoch ms of the most recent regular-session close.
+ *
+ * Walks back from today through weekends and holidays. Used to decide whether
+ * a cached scan still reflects the latest closed bars.
+ */
+function lastMarketCloseTime() {
+  const now = new Date();
+  for (let back = 0; back < 10; back++) {
+    const day = new Date(now.getTime() - back * 86400000);
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short'
+    }).formatToParts(day);
+    const get = (t) => parts.find(p => p.type === t)?.value || '';
+    const dateKey = `${get('year')}-${get('month')}-${get('day')}`;
+    const weekday = get('weekday');
+
+    if (weekday === 'Sat' || weekday === 'Sun' || MARKET_HOLIDAYS.has(dateKey)) continue;
+
+    const closeHour = EARLY_CLOSE_DAYS.has(dateKey) ? 13 : 16;
+    // Build the close instant by finding the UTC time whose ET rendering is
+    // that day at the closing hour.
+    const closeUtc = Date.parse(`${dateKey}T${String(closeHour).padStart(2, '0')}:00:00-05:00`);
+    const dstAdjusted = closeUtc - etOffsetCorrection(dateKey);
+    if (dstAdjusted <= now.getTime()) return dstAdjusted;
+  }
+  // Nothing found in ten days: treat everything as stale rather than fresh.
+  return now.getTime();
+}
+
+/** ET is UTC-5 in winter and UTC-4 in summer; the literal above assumes -5. */
+function etOffsetCorrection(dateKey) {
+  const noonUtc = Date.parse(`${dateKey}T17:00:00Z`);
+  const etHour = parseInt(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', hour: 'numeric', hour12: false
+  }).format(new Date(noonUtc)), 10);
+  // 12 means UTC-5 (standard), 13 means UTC-4 (daylight saving).
+  return etHour === 13 ? 3600000 : 0;
+}
 
 // Firestore persistence for scan cache (survives server restarts)
 const scanCacheRef = db.collection('cache').doc('lastScan');
@@ -2853,17 +2901,35 @@ export async function scanMarket(symbols = DEFAULT_STOCKS) {
     }
   }
 
-  // While the market is closed the underlying bars don't change, so serving the
-  // last scan is correct - but only for a while. This used to be permanent,
-  // which meant the evening refresh never picked up the day's closing data.
+  // While the market is closed the underlying bars don't change, so the last
+  // scan stays valid until the next session - however many hours that is.
   if (!marketStatus.isOpen && lastScanResults && lastScanResults.length > 0) {
-    const age = Date.now() - (lastScanTimestamp || 0);
-    if (age < SCAN_CACHE_TTL_MARKET_CLOSED) {
-      console.log(`📦 Market closed - returning cached scan results (${lastScanResults.length} stocks, age: ${Math.round(age / 60000)}min)`);
+    const takenAt = lastScanTimestamp || 0;
+    const lastClose = lastMarketCloseTime();
+    if (takenAt >= lastClose) {
+      const age = Date.now() - takenAt;
+      console.log(`📦 Market closed - returning cached scan results (${lastScanResults.length} stocks, taken ${Math.round(age / 60000)}min ago, after the last close)`);
       return lastScanResults;
     }
-    console.log(`♻️  Market closed but cached scan is ${Math.round(age / 60000)}min old - rescanning`);
+    console.log('♻️  Cached scan predates the last close - rescanning');
   }
+
+  // Two concurrent scans would double the API spend and race each other on
+  // lastScanResults; whichever finished last would win and the loser's results
+  // might already have been returned to a client.
+  if (scanInFlight) {
+    console.log('⏭️  A scan is already running - waiting for it instead of starting another');
+    return scanInFlight;
+  }
+  scanInFlight = runScan(symbols, marketStatus);
+  try {
+    return await scanInFlight;
+  } finally {
+    scanInFlight = null;
+  }
+}
+
+async function runScan(symbols, marketStatus) {
 
   // Market is open OR no cached results - perform fresh scan
   const results = [];

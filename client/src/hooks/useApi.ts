@@ -1,16 +1,16 @@
 import { useState, useCallback } from 'react';
-import { auth } from '../firebase/config';
+import { getStoredToken } from '../auth/AuthContext';
 import type { ApiResponse, StockAnalysis, Portfolio, Trade, Quote, Alert } from '../types';
 
 export const API_BASE = '/api';
 
 /**
- * Every API call carries the signed-in user's Firebase ID token. The server
- * verifies it; without this header the request is rejected with 401.
+ * Every API call carries the session token. The server verifies it; without
+ * this header the request is rejected with 401.
  */
 export async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<ApiResponse<T>> {
   try {
-    const token = await auth.currentUser?.getIdToken();
+    const token = getStoredToken();
 
     const response = await fetch(`${API_BASE}${endpoint}`, {
       ...options,
@@ -20,6 +20,12 @@ export async function fetchApi<T>(endpoint: string, options?: RequestInit): Prom
         ...(options?.headers || {}),
       },
     });
+
+    // An expired or rejected session must return the user to the login screen
+    // rather than leaving the app showing stale or empty data.
+    if (response.status === 401) {
+      window.dispatchEvent(new Event('auth:unauthorized'));
+    }
 
     // A non-JSON body (an HTML error page, a proxy timeout) used to surface as
     // a raw "SyntaxError: Unexpected token <" in the UI.

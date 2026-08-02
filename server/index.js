@@ -60,10 +60,15 @@ import {
   evaluateOutcomes
 } from './recommendationLog.js';
 import { startPriceMonitor, stopPriceMonitor } from './priceMonitor.js';
-import { requireAuth } from './auth.js';
+import { requireAuth, loginHandler } from './auth.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Railway terminates TLS in front of this process, so without this req.ip is
+// the proxy's address and the login rate limiter would treat every visitor as
+// the same client.
+app.set('trust proxy', 1);
 
 // CORS: an allowlist, not a wildcard. With no auth and `cors()` open to every
 // origin, any website a browser visited could have driven this portfolio.
@@ -94,7 +99,11 @@ app.get('/api/health', (req, res) => {
   res.json({ success: true, status: 'ok', uptime: process.uptime() });
 });
 
-// Everything else under /api requires a verified Firebase ID token.
+// Exchange the app password for a session token. Unauthenticated by
+// definition, and rate limited inside the handler.
+app.post('/api/auth/login', loginHandler);
+
+// Everything else under /api requires a valid session token.
 app.use('/api', requireAuth);
 
 // =====================
