@@ -84,13 +84,26 @@ const allowedOrigins = (
   .map(s => s.trim())
   .filter(Boolean);
 
-app.use('/api', cors({
-  origin(origin, callback) {
-    // Same-origin requests (the production build served by this server) and
-    // non-browser clients send no Origin header.
-    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error('Origin not allowed'));
-  }
+// Uses the options-delegate form, `cors(fn(req, cb))`, because the check needs
+// the request's Host header. The simpler `{ origin(origin, cb) }` form is
+// invoked as a bare function with no request in scope, so it cannot tell what
+// host it is serving.
+app.use('/api', cors((req, done) => {
+  const origin = req.headers.origin;
+  const host = req.headers.host;
+
+  // A same-origin request still carries an Origin header on POST even though
+  // it is not cross-origin. In production this process serves both the app and
+  // the API, so requests arrive tagged with the deployment's own domain —
+  // which is not, and cannot be, in a hardcoded localhost allowlist. Without
+  // this branch every buy and sell would be rejected the moment the app left
+  // localhost, and only in production.
+  const isSameOrigin = !!host && (origin === `https://${host}` || origin === `http://${host}`);
+
+  // No Origin header at all: a non-browser client (curl, the price monitor).
+  const allowed = !origin || isSameOrigin || allowedOrigins.includes(origin);
+
+  done(null, { origin: allowed });
 }));
 app.use(express.json({ limit: '100kb' }));
 
