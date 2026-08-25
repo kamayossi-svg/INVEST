@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Build output
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Database
+server/data.json
+
+# Firebase service account key (NEVER commit this)
+server/serviceAccountKey.json
+serviceAccountKey.json
+
+# Temporary files
+*.tmp
+*.temp
+
+# Debug files
+debug_scan.json
+scan_result.json
+nul
+
+# Python files (if not needed)
+app.py
+requirements.txt
+
+# Claude config
+.claude/
